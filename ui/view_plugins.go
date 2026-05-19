@@ -11,6 +11,10 @@ import (
 // buildPluginsTree gathers all plugin processes from system /proc, groups them
 // by plugin name, and formats them into a tree structure compatible with treePrefix.
 func (m Model) buildPluginsTree() []collector.Process {
+	if m.frozen && len(m.cachedPluginsTree) > 0 {
+		return m.cachedPluginsTree
+	}
+
 	rawProcs := m.coll.CollectSystemPlugins()
 
 	groups := make(map[string][]collector.Process)

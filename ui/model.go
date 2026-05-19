@@ -108,6 +108,7 @@ type Model struct {
 	sidebarScrollOffset int
 	frozen              bool
 	selectedPlugin      int
+	cachedPluginsTree   []collector.Process
 }
 
 // New constructs and returns an initialised Model.
@@ -198,6 +199,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.graphStore.Push(key, w.CPUTotal, memPct)
 			}
 		}
+
+		if !m.frozen {
+			m.cachedPluginsTree = m.buildPluginsTree()
+		}
+
 		var cmd tea.Cmd
 		if m.sidebarOpen {
 			m, cmd = m.triggerSidebar(true) // force refresh
