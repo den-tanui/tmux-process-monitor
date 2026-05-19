@@ -4,6 +4,14 @@ A high-performance, visually stunning Terminal User Interface (TUI) process moni
 
 ---
 
+## 📸 Screenshots
+
+| 📈 Sparkline Graphs & Telemetry | 🔍 Advanced Diagnostics Sidebar | ⌨️ Interactive Help Reference |
+|:---:|:---:|:---:|
+| ![with-graph](screenshots/with-graph.png) | ![preview-witr](screenshots/preview-witr.png) | ![help-popup](screenshots/help-popup.png) |
+
+---
+
 ## ✨ Features
 
 * **🚀 Lightning-Fast TUI:** Built using Go and Lipgloss with an extremely light memory footprint, delivering instant 60 FPS rendering within a tmux popup.
