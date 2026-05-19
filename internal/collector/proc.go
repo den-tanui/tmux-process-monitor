@@ -163,21 +163,41 @@ func scanChildrenFallback(ppid int) []int {
 	return children
 }
 
-// isPluginProcess returns true when the process appears to be spawned by a
-// tmux plugin manager (checks /proc/PID/environ for TMUX_PLUGIN_MANAGER_PATH).
+// isPluginProcess returns true when the process is an actual tmux plugin.
+// It matches executables or scripts located inside a /plugins/ folder,
+// while filtering out standard system binaries and interactive developer tools.
 func isPluginProcess(pid int) bool {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+	exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 	if err == nil {
-		env := string(data)
-		if strings.Contains(env, "TMUX_PLUGIN_MANAGER_PATH") ||
-			strings.Contains(env, "tmux-process-monitor") {
+		// 1. If the compiled binary itself is inside the plugins folder, it's a plugin!
+		if strings.Contains(exePath, "/plugins/") {
 			return true
 		}
+		
+		// Extract base name of the running executable
+		baseName := exePath
+		if idx := strings.LastIndex(exePath, "/"); idx >= 0 {
+			baseName = exePath[idx+1:]
+		}
+		
+		// 2. Blacklist system/interactive dev tools to prevent false positives when working in the dir
+		switch baseName {
+		case "git", "make", "nvim", "vim", "vi", "emacs", "nano", "go", "cargo", "npm", "yarn", "node", "python", "python3", "gcc", "clang", "gdb", "docker":
+			return false
+		}
 	}
+
+	// 3. Check if the command line arguments reference a script inside the plugins directory
 	cmd, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err == nil {
-		return strings.Contains(string(cmd), "/plugins/")
+		cmdline := string(cmd)
+		for _, part := range strings.Split(cmdline, "\x00") {
+			if strings.Contains(part, "/plugins/") {
+				return true
+			}
+		}
 	}
+
 	return false
 }
 
