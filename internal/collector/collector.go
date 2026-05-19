@@ -168,6 +168,7 @@ func (c *Collector) buildTree(pid, depth, parentPID int, siblings []int) []Proce
 		HasChildren: len(children) > 0,
 		IsPlugin:    isPluginProcess(pid),
 		Status:      readState(pid),
+		PluginName:  getPluginName(pid, full),
 	}
 
 	result := []Process{proc}

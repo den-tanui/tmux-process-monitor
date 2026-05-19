@@ -21,6 +21,7 @@ type Process struct {
 	HasChildren bool
 	IsPlugin    bool // detected as tmux plugin process
 	Status      string // running, sleeping, etc.
+	PluginName  string // parsed plugin name if IsPlugin is true
 }
 
 // WindowData aggregates all processes for one tmux window.

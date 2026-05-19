@@ -167,12 +167,18 @@ func scanChildrenFallback(ppid int) []int {
 // tmux plugin manager (checks /proc/PID/environ for TMUX_PLUGIN_MANAGER_PATH).
 func isPluginProcess(pid int) bool {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
-	if err != nil {
-		return false
+	if err == nil {
+		env := string(data)
+		if strings.Contains(env, "TMUX_PLUGIN_MANAGER_PATH") ||
+			strings.Contains(env, "tmux-process-monitor") {
+			return true
+		}
 	}
-	env := string(data)
-	return strings.Contains(env, "TMUX_PLUGIN_MANAGER_PATH") ||
-		strings.Contains(env, "tmux-process-monitor")
+	cmd, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err == nil {
+		return strings.Contains(string(cmd), "/plugins/")
+	}
+	return false
 }
 
 // totalRAMBytes returns the total physical memory in bytes.
@@ -253,4 +259,50 @@ func readState(pid int) string {
 		return fields[0]
 	}
 }
+
+// getPluginName extracts a clean plugin name from process environment or command line.
+func getPluginName(pid int, fullCmd string) string {
+	// 1. Try environment variables (PWD or TMUX_PLUGIN_MANAGER_PATH)
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+	if err == nil {
+		env := string(data)
+		for _, part := range strings.Split(env, "\x00") {
+			if strings.HasPrefix(part, "PWD=") {
+				pwd := part[4:]
+				pIdx := strings.Index(pwd, "/plugins/")
+				if pIdx >= 0 {
+					sub := pwd[pIdx+len("/plugins/"):]
+					end := strings.Index(sub, "/")
+					if end > 0 {
+						return sub[:end]
+					}
+					return sub
+				}
+			}
+		}
+	}
+
+	// 2. Fall back to command line path
+	idx := strings.Index(fullCmd, "/plugins/")
+	if idx >= 0 {
+		sub := fullCmd[idx+len("/plugins/"):]
+		end := strings.Index(sub, "/")
+		if end > 0 {
+			return sub[:end]
+		}
+		// Try spaces or args
+		endSpace := strings.Index(sub, " ")
+		if endSpace > 0 {
+			sub = sub[:endSpace]
+		}
+		endSlash := strings.Index(sub, "/")
+		if endSlash > 0 {
+			return sub[:endSlash]
+		}
+		return sub
+	}
+
+	return "tmux-plugin"
+}
+
 

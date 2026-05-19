@@ -27,6 +27,7 @@ const (
 	ViewDetail                   // full-screen process detail
 	ViewOverview                 // all-sessions table
 	ViewHelp                     // help overlay
+	ViewPlugins                  // tmux plugins dashboard
 )
 
 // InputMode identifies an active text input prompt.
@@ -106,6 +107,7 @@ type Model struct {
 	sidebarPID          int
 	sidebarScrollOffset int
 	frozen              bool
+	selectedPlugin      int
 }
 
 // New constructs and returns an initialised Model.
@@ -360,6 +362,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, collectSessionsCmd(m.coll)
 		}
 
+	case msg.String() == "p":
+		if m.mode == ViewPlugins {
+			m.mode = ViewMain
+		} else {
+			m.mode = ViewPlugins
+		}
+
 	case msg.String() == "tab":
 		m.sidebarOpen = !m.sidebarOpen
 
@@ -371,19 +380,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case msg.String() == "esc":
 		if m.mode == ViewHelp {
-			m.mode = ViewMain
+			m.mode = m.prevMode
 		} else if m.mode == ViewOverview {
+			m.mode = ViewMain
+		} else if m.mode == ViewPlugins {
 			m.mode = ViewMain
 		}
 
 	case msg.String() == "left", msg.String() == "h", msg.String() == "H":
-		if m.mode == ViewOverview {
+		if m.mode == ViewOverview || m.mode == ViewPlugins {
 			break
 		}
 		m.prevTab()
 
 	case msg.String() == "right", msg.String() == "l", msg.String() == "L":
-		if m.mode == ViewOverview {
+		if m.mode == ViewOverview || m.mode == ViewPlugins {
 			break
 		}
 		m.nextTab()
@@ -392,6 +403,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.mode == ViewOverview {
 			m.browsingSession = true
 			m.selectedSession = (m.selectedSession + 1) % max1(len(m.sessions))
+		} else if m.mode == ViewPlugins {
+			plugins := m.getPluginsData()
+			m.selectedPlugin = (m.selectedPlugin + 1) % max1(len(plugins))
 		} else {
 			m.browsingProcs = true
 			if m.currentTab < len(m.windows) {
@@ -407,6 +421,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.selectedSession--
 			} else {
 				m.selectedSession = max0(len(m.sessions) - 1)
+			}
+		} else if m.mode == ViewPlugins {
+			plugins := m.getPluginsData()
+			if m.selectedPlugin > 0 {
+				m.selectedPlugin--
+			} else {
+				m.selectedPlugin = max0(len(plugins) - 1)
 			}
 		} else if m.browsingProcs {
 			if m.currentTab < len(m.windows) {
@@ -670,6 +691,8 @@ func (m Model) View() string {
 		var leftView string
 		if m.mode == ViewGraph {
 			leftView = leftModel.viewWithGraph()
+		} else if m.mode == ViewPlugins {
+			leftView = leftModel.viewPlugins()
 		} else {
 			leftView = leftModel.viewMain()
 		}
@@ -691,6 +714,9 @@ func (m Model) View() string {
 
 	if m.mode == ViewGraph {
 		return m.viewWithGraph()
+	}
+	if m.mode == ViewPlugins {
+		return m.viewPlugins()
 	}
 	return m.viewMain()
 }
@@ -763,7 +789,7 @@ func (m Model) renderFooter() string {
 	}
 
 	shortcuts := []string{
-		"h/l:win", "j/k:nav", "Ent:view", "g:graph", "tab:side", "space:freeze", "o:all", "x:kill", "s:sig", "?:help", "q:quit",
+		"h/l:win", "j/k:nav", "Ent:view", "g:graph", "tab:side", "space:freeze", "p:plugins", "o:all", "x:kill", "s:sig", "?:help", "q:quit",
 	}
 	joined := strings.Join(shortcuts, "  │  ")
 	return StyleFooter.Render(center(joined, m.width))
@@ -1029,6 +1055,52 @@ func (m Model) triggerSidebar(force bool) (Model, tea.Cmd) {
 	if !m.sidebarOpen {
 		return m, nil
 	}
+	if m.mode == ViewPlugins {
+		plugins := m.getPluginsData()
+		if m.selectedPlugin >= len(plugins) {
+			m.sidebarContent = ""
+			m.sidebarPID = 0
+			m.sidebarScrollOffset = 0
+			return m, nil
+		}
+		p := plugins[m.selectedPlugin]
+		
+		// To avoid recalculating if selection hasn't changed.
+		if !force && m.sidebarContent != "" && m.sidebarPID == -m.selectedPlugin-1 {
+			return m, nil
+		}
+		
+		m.sidebarPID = -m.selectedPlugin - 1
+		m.sidebarScrollOffset = 0
+		
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Primary:  %s\n", p.PrimaryCmd))
+		sb.WriteString(fmt.Sprintf("Status:   %s\n", p.Status))
+		sb.WriteString(fmt.Sprintf("Processes:%d\n", p.ProcessCount))
+		sb.WriteString(fmt.Sprintf("Total CPU:%.1f%%\n", p.CPUTotal))
+		sb.WriteString(fmt.Sprintf("Total Mem:%d MB\n\n", p.MemTotal/1024/1024))
+		
+		sb.WriteString("Active Processes:\n")
+		sb.WriteString(strings.Repeat("─", 36) + "\n")
+		
+		seen := make(map[int]bool)
+		for _, s := range m.sessions {
+			for _, w := range s.Windows {
+				for _, proc := range w.Processes {
+					if proc.IsPlugin && proc.PluginName == p.Name && !seen[proc.PID] {
+						seen[proc.PID] = true
+						sb.WriteString(fmt.Sprintf("● PID %d\n", proc.PID))
+						sb.WriteString(fmt.Sprintf("  CPU: %.1f%%  Mem: %dMB\n", proc.CPUPercent, proc.MemRSS/1024/1024))
+						sb.WriteString(fmt.Sprintf("  Cmd: %s\n\n", truncate(proc.FullCmdline, 32)))
+					}
+				}
+			}
+		}
+		
+		m.sidebarContent = sb.String()
+		return m, nil
+	}
+
 	p := m.getSelectedProcess()
 	if p == nil {
 		m.sidebarContent = ""
