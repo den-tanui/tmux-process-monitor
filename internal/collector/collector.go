@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -252,3 +253,57 @@ func (c *Collector) cachedPanePIDsFor(session string, windowIndex int) []int {
 func itoa(n int) string {
 	return strconv.Itoa(n)
 }
+
+// CollectSystemPlugins scans /proc to comprehensively detect all active tmux plugins.
+// It returns a flattened tree slice of all plugin processes on the system.
+func (c *Collector) CollectSystemPlugins() []Process {
+	files, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+
+	var pluginRootPIDs []int
+	for _, f := range files {
+		if !f.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(f.Name())
+		if err != nil {
+			continue
+		}
+		if isPluginProcess(pid) {
+			pluginRootPIDs = append(pluginRootPIDs, pid)
+		}
+	}
+
+	// Filter out descendants so we only keep root plugin processes.
+	var roots []int
+	for _, pid := range pluginRootPIDs {
+		ppid := readPPID(pid)
+		isRoot := true
+		for _, p := range pluginRootPIDs {
+			if p == ppid {
+				isRoot = false
+				break
+			}
+		}
+		if isRoot {
+			roots = append(roots, pid)
+		}
+	}
+
+	var allProcs []Process
+	seen := make(map[int]bool)
+	for _, rootPID := range roots {
+		procs := c.buildTree(rootPID, 0, -1, nil)
+		for _, p := range procs {
+			if !seen[p.PID] {
+				seen[p.PID] = true
+				allProcs = append(allProcs, p)
+			}
+		}
+	}
+
+	return allProcs
+}
+

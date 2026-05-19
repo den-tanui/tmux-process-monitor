@@ -5,71 +5,87 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/den-tanui/tmux-process-monitor/internal/collector"
 )
 
-type PluginData struct {
-	Name         string
-	PIDs         []int
-	CPUTotal     float64
-	MemTotal     int64
-	ProcessCount int
-	PrimaryCmd   string
-	Status       string
-}
+// buildPluginsTree gathers all plugin processes from system /proc, groups them
+// by plugin name, and formats them into a tree structure compatible with treePrefix.
+func (m Model) buildPluginsTree() []collector.Process {
+	rawProcs := m.coll.CollectSystemPlugins()
 
-func (m Model) getPluginsData() []PluginData {
-	pluginMap := make(map[string]*PluginData)
-	seenPIDs := make(map[int]bool)
+	groups := make(map[string][]collector.Process)
+	for _, p := range rawProcs {
+		pName := p.PluginName
+		if pName == "" {
+			pName = "tmux-plugin"
+		}
+		groups[pName] = append(groups[pName], p)
+	}
 
-	for _, s := range m.sessions {
-		for _, w := range s.Windows {
-			for _, p := range w.Processes {
-				if p.IsPlugin && !seenPIDs[p.PID] {
-					seenPIDs[p.PID] = true
-					pName := p.PluginName
-					if pName == "" {
-						pName = "tmux-plugin"
-					}
+	var pNames []string
+	for k := range groups {
+		pNames = append(pNames, k)
+	}
+	sort.Strings(pNames)
 
-					pd, exists := pluginMap[pName]
-					if !exists {
-						pd = &PluginData{
-							Name:       pName,
-							PrimaryCmd: p.Command,
-							Status:     p.Status,
-						}
-						pluginMap[pName] = pd
-					}
+	var tree []collector.Process
+	for i, pName := range pNames {
+		procs := groups[pName]
 
-					pd.PIDs = append(pd.PIDs, p.PID)
-					pd.CPUTotal += p.CPUPercent
-					pd.MemTotal += p.MemRSS
-					pd.ProcessCount++
-
-					// Status precedence: running > disk sleep > sleeping > zombie > stopped
-					if p.Status == "running" {
-						pd.Status = "running"
-					} else if pd.Status != "running" && p.Status == "disk sleep" {
-						pd.Status = "disk sleep"
-					} else if pd.Status != "running" && pd.Status != "disk sleep" && p.Status == "sleeping" {
-						pd.Status = "sleeping"
-					}
-				}
+		// To preserve tree hierarchy, we shift Depth of all nodes by +1
+		// and find the last process at Depth 1 (originally 0) to mark IsLastChild.
+		lastRootIdx := -1
+		for idx, p := range procs {
+			if p.Depth == 0 {
+				lastRootIdx = idx
 			}
 		}
+
+		shiftedProcs := make([]collector.Process, len(procs))
+		for idx, p := range procs {
+			p.Depth = p.Depth + 1
+			if p.Depth == 1 {
+				p.IsLastChild = (idx == lastRootIdx)
+			}
+			shiftedProcs[idx] = p
+		}
+
+		// Calculate aggregated metrics for the virtual parent node
+		var cpuTotal float64
+		var memTotal int64
+		status := "sleeping"
+
+		for _, p := range procs {
+			cpuTotal += p.CPUPercent
+			memTotal += p.MemRSS
+			if p.Status == "running" {
+				status = "running"
+			}
+		}
+
+		isLastPlugin := (i == len(pNames)-1)
+
+		// Create the virtual parent folder node
+		virtualParent := collector.Process{
+			PID:         0, // virtual PID
+			Command:     "📁 " + pName,
+			FullCmdline: fmt.Sprintf("Tmux Plugin: %s", pName),
+			Depth:       0,
+			IsLastChild: isLastPlugin,
+			HasChildren: len(procs) > 0,
+			IsPlugin:    true,
+			PluginName:  pName,
+			Status:      status,
+			CPUPercent:  cpuTotal,
+			MemRSS:      memTotal,
+			MemPercent:  m.coll.MemPercent(memTotal),
+		}
+
+		tree = append(tree, virtualParent)
+		tree = append(tree, shiftedProcs...)
 	}
 
-	var list []PluginData
-	for _, pd := range pluginMap {
-		list = append(list, *pd)
-	}
-
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].Name < list[j].Name
-	})
-
-	return list
+	return tree
 }
 
 func (m Model) viewPlugins() string {
@@ -78,8 +94,8 @@ func (m Model) viewPlugins() string {
 		m.renderSeparator(),
 	}
 
-	plugins := m.getPluginsData()
-	if len(plugins) == 0 {
+	pluginsTree := m.buildPluginsTree()
+	if len(pluginsTree) == 0 {
 		sections = append(sections, "", center(StyleValue.Render("No active tmux plugin processes detected."), m.width))
 		for len(sections) < m.height-3 {
 			sections = append(sections, "")
@@ -90,11 +106,11 @@ func (m Model) viewPlugins() string {
 
 	// Table header
 	hdr := StyleTree.Render(
-		fmt.Sprintf("  %-26s %6s %8s %10s  %-20s %-10s", "PLUGIN NAME", "PROCS", "CPU%", "MEMORY", "PRIMARY CMD", "STATUS"),
+		fmt.Sprintf("%8s %6s %15s %-10s  %s", "PID", "CPU%", "MEM", "STATUS", "COMMAND"),
 	)
 	sections = append(sections, hdr, m.renderSeparator())
 
-	const chrome = 7
+	const chrome = 9 // Header(1) + Sep(1) + TableHdr(1) + Sep(1) + Separator(1) + Stats(1) + Footer(1) + padding = 9
 	availRows := m.height - chrome
 	if availRows < 1 {
 		availRows = 1
@@ -105,60 +121,14 @@ func (m Model) viewPlugins() string {
 	}
 
 	var rows []string
-	for i, p := range plugins {
+	for i, proc := range pluginsTree {
 		if i < firstVisible {
 			continue
 		}
 		if len(rows) >= availRows {
 			break
 		}
-
-		memMB := p.MemTotal / 1024 / 1024
-		memStr := fmt.Sprintf("%dMB", memMB)
-		
-		var statusStyle lipgloss.Style
-		switch p.Status {
-		case "running":
-			statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)
-		case "sleeping", "idle":
-			statusStyle = StyleValue
-		case "stopped", "tracing stop":
-			statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaf00"))
-		case "zombie", "dead":
-			statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
-		case "disk sleep":
-			statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#af87ff"))
-		default:
-			statusStyle = StyleValue
-		}
-
-		statusStr := fmt.Sprintf("%-10s", p.Status)
-		if len(statusStr) > 10 {
-			statusStr = statusStr[:10]
-		}
-		styledStatus := statusStyle.Render(statusStr)
-
-		isSelected := i == m.selectedPlugin
-		prefix := "  "
-		if isSelected {
-			prefix = StyleValue.Render("» ")
-		}
-
-		row := fmt.Sprintf("%s%-26s %6d %6.1f%% %8s  %-20s %s",
-			prefix,
-			truncate(p.Name, 26),
-			p.ProcessCount,
-			p.CPUTotal,
-			memStr,
-			truncate(p.PrimaryCmd, 20),
-			styledStatus,
-		)
-
-		if isSelected {
-			rows = append(rows, StyleSelected.Render(row))
-		} else {
-			rows = append(rows, StyleValue.Render(row))
-		}
+		rows = append(rows, m.renderProcessRow(proc, i, pluginsTree))
 	}
 	sections = append(sections, rows...)
 

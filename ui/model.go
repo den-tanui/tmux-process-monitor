@@ -404,8 +404,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.browsingSession = true
 			m.selectedSession = (m.selectedSession + 1) % max1(len(m.sessions))
 		} else if m.mode == ViewPlugins {
-			plugins := m.getPluginsData()
-			m.selectedPlugin = (m.selectedPlugin + 1) % max1(len(plugins))
+			pluginsTree := m.buildPluginsTree()
+			m.selectedPlugin = (m.selectedPlugin + 1) % max1(len(pluginsTree))
 		} else {
 			m.browsingProcs = true
 			if m.currentTab < len(m.windows) {
@@ -423,11 +423,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.selectedSession = max0(len(m.sessions) - 1)
 			}
 		} else if m.mode == ViewPlugins {
-			plugins := m.getPluginsData()
+			pluginsTree := m.buildPluginsTree()
 			if m.selectedPlugin > 0 {
 				m.selectedPlugin--
 			} else {
-				m.selectedPlugin = max0(len(plugins) - 1)
+				m.selectedPlugin = max0(len(pluginsTree) - 1)
 			}
 		} else if m.browsingProcs {
 			if m.currentTab < len(m.windows) {
@@ -852,8 +852,12 @@ func (m Model) renderProcessList(availLines int) []string {
 func (m Model) renderProcessRow(proc collector.Process, idx int, all []collector.Process) string {
 	prefix := treePrefix(proc, idx, all)
 	memMB := proc.MemRSS / 1024 / 1024
-
-	baseLeft := fmt.Sprintf("%8d %5.1f%% %7dMB(%4.1f%%) ", proc.PID, proc.CPUPercent, memMB, proc.MemPercent)
+	var baseLeft string
+	if proc.PID == 0 {
+		baseLeft = fmt.Sprintf("%8s %5.1f%% %7dMB(%4.1f%%) ", "PLUGIN", proc.CPUPercent, memMB, proc.MemPercent)
+	} else {
+		baseLeft = fmt.Sprintf("%8d %5.1f%% %7dMB(%4.1f%%) ", proc.PID, proc.CPUPercent, memMB, proc.MemPercent)
+	}
 
 	var statusStyle lipgloss.Style
 	switch proc.Status {
@@ -884,7 +888,12 @@ func (m Model) renderProcessRow(proc collector.Process, idx int, all []collector
 
 	cmd := proc.Command
 
-	isSelected := m.browsingProcs && idx == m.selectedProc
+	isSelected := false
+	if m.mode == ViewPlugins {
+		isSelected = idx == m.selectedPlugin
+	} else {
+		isSelected = m.browsingProcs && idx == m.selectedProc
+	}
 	if isSelected {
 		// Horizontal scroll for the selected row.
 		if len(cmd) > maxCmdLen {
@@ -1056,49 +1065,57 @@ func (m Model) triggerSidebar(force bool) (Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.mode == ViewPlugins {
-		plugins := m.getPluginsData()
-		if m.selectedPlugin >= len(plugins) {
+		pluginsTree := m.buildPluginsTree()
+		if m.selectedPlugin >= len(pluginsTree) {
 			m.sidebarContent = ""
 			m.sidebarPID = 0
 			m.sidebarScrollOffset = 0
 			return m, nil
 		}
-		p := plugins[m.selectedPlugin]
-		
-		// To avoid recalculating if selection hasn't changed.
-		if !force && m.sidebarContent != "" && m.sidebarPID == -m.selectedPlugin-1 {
-			return m, nil
-		}
-		
-		m.sidebarPID = -m.selectedPlugin - 1
-		m.sidebarScrollOffset = 0
-		
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("Primary:  %s\n", p.PrimaryCmd))
-		sb.WriteString(fmt.Sprintf("Status:   %s\n", p.Status))
-		sb.WriteString(fmt.Sprintf("Processes:%d\n", p.ProcessCount))
-		sb.WriteString(fmt.Sprintf("Total CPU:%.1f%%\n", p.CPUTotal))
-		sb.WriteString(fmt.Sprintf("Total Mem:%d MB\n\n", p.MemTotal/1024/1024))
-		
-		sb.WriteString("Active Processes:\n")
-		sb.WriteString(strings.Repeat("─", 36) + "\n")
-		
-		seen := make(map[int]bool)
-		for _, s := range m.sessions {
-			for _, w := range s.Windows {
-				for _, proc := range w.Processes {
-					if proc.IsPlugin && proc.PluginName == p.Name && !seen[proc.PID] {
-						seen[proc.PID] = true
-						sb.WriteString(fmt.Sprintf("● PID %d\n", proc.PID))
-						sb.WriteString(fmt.Sprintf("  CPU: %.1f%%  Mem: %dMB\n", proc.CPUPercent, proc.MemRSS/1024/1024))
-						sb.WriteString(fmt.Sprintf("  Cmd: %s\n\n", truncate(proc.FullCmdline, 32)))
-					}
+		proc := pluginsTree[m.selectedPlugin]
+
+		// 1. Virtual plugin folder node
+		if proc.PID == 0 {
+			pName := proc.PluginName
+			if !force && m.sidebarContent != "" && m.sidebarPID == -m.selectedPlugin-1 {
+				return m, nil
+			}
+
+			m.sidebarPID = -m.selectedPlugin - 1
+			m.sidebarScrollOffset = 0
+
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Plugin Name: %s\n", pName))
+			sb.WriteString(fmt.Sprintf("Status:      %s\n", proc.Status))
+			sb.WriteString(fmt.Sprintf("Total CPU:   %.1f%%\n", proc.CPUPercent))
+			sb.WriteString(fmt.Sprintf("Total Mem:   %d MB\n\n", proc.MemRSS/1024/1024))
+
+			sb.WriteString("Active Processes:\n")
+			sb.WriteString(strings.Repeat("─", 36) + "\n")
+
+			seen := make(map[int]bool)
+			for _, p := range pluginsTree {
+				if p.PID != 0 && p.PluginName == pName && !seen[p.PID] {
+					seen[p.PID] = true
+					sb.WriteString(fmt.Sprintf("● PID %d\n", p.PID))
+					sb.WriteString(fmt.Sprintf("  CPU: %.1f%%  Mem: %dMB\n", p.CPUPercent, p.MemRSS/1024/1024))
+					sb.WriteString(fmt.Sprintf("  Cmd: %s\n\n", truncate(p.FullCmdline, 32)))
 				}
 			}
+
+			m.sidebarContent = sb.String()
+			return m, nil
 		}
-		
-		m.sidebarContent = sb.String()
-		return m, nil
+
+		// 2. Concrete child process under a plugin folder
+		if !force && m.sidebarPID == proc.PID && m.sidebarContent != "" && m.sidebarContent != "Loading witr info..." {
+			return m, nil
+		}
+
+		m.sidebarPID = proc.PID
+		m.sidebarScrollOffset = 0
+		m.sidebarContent = "Loading witr info..."
+		return m, m.runWitrSidebarCmd(proc)
 	}
 
 	p := m.getSelectedProcess()
