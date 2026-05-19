@@ -1,0 +1,10 @@
+# Build binaries
+bin/
+tmux-process-monitor
+
+# Test and scratch files
+test_out.txt
+scratch_sparkline.go
+
+# Ignored docs directory as per user request
+docs/
