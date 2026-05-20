@@ -6,9 +6,9 @@ A high-performance, visually stunning Terminal User Interface (TUI) process moni
 
 ## 📸 Screenshots
 
-|      📈 Sparkline Graphs & Telemetry      |        🔍 Advanced Diagnostics Sidebar        |       ⌨️ Interactive Help Reference       |
-| :---------------------------------------: | :-------------------------------------------: | :---------------------------------------: |
-| ![with-graph](screenshots/with-graph.png) | ![preview-witr](screenshots/preview-witr.png) | ![help-popup](screenshots/help-popup.png) |
+|      📈 Sparkline Graphs & Telemetry      |        🔍 Advanced Diagnostics Sidebar        |       ⌨️ Interactive Help Reference       |       🔌 Plugin Manager Integration       |
+| :---------------------------------------: | :-------------------------------------------: | :---------------------------------------: | :---------------------------------------: |
+| ![with-graph](screenshots/with-graph.png) | ![preview-witr](screenshots/preview-witr.png) | ![help-popup](screenshots/help-popup.png) | ![plugins-view](screenshots/plugins-view.png) |
 
 ---
 
@@ -67,8 +67,7 @@ You can customize binding keys, sizing, and updates directly in your `~/.tmux.co
 
 | Option                               | Default | Description                                           |
 | ------------------------------------ | ------- | ----------------------------------------------------- |
-| `@tmux_process_monitor_key`          | `m`     | Key to open the active-session process monitor popup. |
-| `@tmux_process_monitor_overview_key` | `M`     | Key to open the global multi-session overview popup.  |
+| `@tmux_process_monitor_key`          | `t`     | Key to open the process monitor popup (toggle overview with `o`). |
 | `@tmux_process_monitor_refresh_rate` | `2.0`   | Refresh rate in seconds.                              |
 | `@tmux_process_monitor_width`        | `80%`   | Width of the tmux popup window.                       |
 | `@tmux_process_monitor_height`       | `80%`   | Height of the tmux popup window.                      |
@@ -113,7 +112,7 @@ All controls are visually formatted in a centered bar at the bottom of the scree
 - **OS:** Linux (relies on `/proc` scanning).
 - **tmux:** 3.2+ (for popup support).
 - **Go:** 1.21+ (if compiling from source).
-- **`witr` (Optional):** Install [witr](https://github.com/YlanAllouche/witr) for full verbose process diagnostics in the sidebar. If not installed, a detailed telemetry fallback pane is seamlessly rendered.
+- **`witr` (Optional):** Install [witr](https://github.com/pranshuparmar/witr) for full verbose process diagnostics in the sidebar. If not installed, a detailed telemetry fallback pane is seamlessly rendered.
 
 ---
 

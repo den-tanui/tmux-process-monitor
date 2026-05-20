@@ -3,32 +3,30 @@
 # tmux-process-monitor main plugin file
 # Sourced by TPM when the plugin is loaded
 
-script_dir=$(dirname "$0")
-script_dir=$(
-	cd "$script_dir"
-	pwd
-)
+# Get script directory
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+if [ -z "$SCRIPT_PATH" ]; then
+    SCRIPT_PATH="$0"
+fi
+CURRENT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+BINARY="$CURRENT_DIR/bin/tmux-process-monitor"
 
-. "$script_dir/scripts/helpers.sh"
-
-# Ensure the binary is present; run install if not
-bin="$script_dir/bin/tmux-process-monitor"
-if [ ! -x "$bin" ]; then
-	"$script_dir/scripts/install.sh"
+# Ensure binary exists
+if [ ! -x "$BINARY" ]; then
+    "$CURRENT_DIR/scripts/install.sh"
 fi
 
-# Monitor keybinding (default: m)
-monitor_key=$(get_option "@tmux_process_monitor_key" "m")
-monitor_script="$script_dir/scripts/launch.sh"
+# Get config with defaults
+REFRESH_RATE="$(tmux show-option -gqv '@tmux_process_monitor_refresh_rate' 2>/dev/null)"
+[ -z "$REFRESH_RATE" ] && REFRESH_RATE="2.0"
+WIDTH="$(tmux show-option -gqv '@tmux_process_monitor_width' 2>/dev/null)"
+[ -z "$WIDTH" ] && WIDTH="80%"
+HEIGHT="$(tmux show-option -gqv '@tmux_process_monitor_height' 2>/dev/null)"
+[ -z "$HEIGHT" ] && HEIGHT="80%"
 
-lowercase_key=$(echo "$monitor_key" | tr '[:upper:]' '[:lower:]')
-if [ "$lowercase_key" != "none" ]; then
-	tmux bind-key "${monitor_key}" run-shell -t "#{pane_id}" "\"$monitor_script\""
-fi
-
-# Overview keybinding (default: M)
-overview_key=$(get_option "@tmux_process_monitor_overview_key" "M")
-lowercase_overview_key=$(echo "$overview_key" | tr '[:upper:]' '[:lower:]')
-if [ "$lowercase_overview_key" != "none" ]; then
-	tmux bind-key "${overview_key}" run-shell -t "#{pane_id}" "\"$monitor_script\" --overview"
-fi
+tmux bind-key t run-shell "
+    SESSION=\$(tmux display-message -p '#{session_name}');
+    WINDOW=\$(tmux display-message -p '#{window_name}');
+    CWD=\$(tmux display-message -p '#{pane_current_path}');
+    tmux display-popup -T ' tmux-process-monitor ' -E -w '$WIDTH' -h '$HEIGHT' -d \"\$CWD\" '$BINARY' \"\$SESSION\" -w \"\$WINDOW\" -r '$REFRESH_RATE'
+"
