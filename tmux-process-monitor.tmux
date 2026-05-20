@@ -9,6 +9,10 @@ if [ -z "$SCRIPT_PATH" ]; then
     SCRIPT_PATH="$0"
 fi
 CURRENT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+
+# Source helpers for get_option function
+. "$CURRENT_DIR/scripts/helpers.sh"
+
 BINARY="$CURRENT_DIR/bin/tmux-process-monitor"
 
 # Ensure binary exists
@@ -17,12 +21,9 @@ if [ ! -x "$BINARY" ]; then
 fi
 
 # Get config with defaults
-REFRESH_RATE="$(tmux show-option -gqv '@tmux_process_monitor_refresh_rate' 2>/dev/null)"
-[ -z "$REFRESH_RATE" ] && REFRESH_RATE="2.0"
-WIDTH="$(tmux show-option -gqv '@tmux_process_monitor_width' 2>/dev/null)"
-[ -z "$WIDTH" ] && WIDTH="80%"
-HEIGHT="$(tmux show-option -gqv '@tmux_process_monitor_height' 2>/dev/null)"
-[ -z "$HEIGHT" ] && HEIGHT="80%"
+REFRESH_RATE="$(get_option "@tmux_process_monitor_refresh_rate" "2.0")"
+WIDTH="$(get_option "@tmux_process_monitor_width" "80%")"
+HEIGHT="$(get_option "@tmux_process_monitor_height" "80%")"
 
 tmux bind-key t run-shell "
     SESSION=\$(tmux display-message -p '#{session_name}');
