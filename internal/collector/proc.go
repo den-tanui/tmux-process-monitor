@@ -222,14 +222,14 @@ func totalRAMBytes() int64 {
 }
 
 // cpuPercent computes the CPU % between two samples.
+// Returns the percentage of one core used (can exceed 100% for multi-threaded processes).
 func cpuPercent(prev, curr cpuSample) float64 {
 	elapsed := curr.ts.Sub(prev.ts).Seconds()
 	if elapsed < 0.05 {
 		return 0
 	}
 	tickDiff := float64(curr.totalTicks - prev.totalTicks)
-	cores := float64(runtime.NumCPU())
-	return (tickDiff / float64(clocksPerSec) / elapsed) * 100.0 * cores
+	return (tickDiff / float64(clocksPerSec) / elapsed) * 100.0
 }
 
 // pidExists returns true when /proc/PID/stat can be read.

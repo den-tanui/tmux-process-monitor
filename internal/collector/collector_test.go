@@ -1,24 +1,18 @@
 package collector
 
 import (
-	"runtime"
 	"testing"
 	"time"
 )
 
 // TestCPUPercent_delta verifies the delta calculation for known tick values.
 func TestCPUPercent_delta(t *testing.T) {
-	// 100 ticks over 1 second on 1 core = 100%.
-	// cpuPercent scales by runtime.NumCPU(), so the expected range is
-	// [50*cores, 200*cores] to handle jitter.
-	numCPU := runtime.NumCPU()
+	// 100 ticks over 1 second = 100% of one core.
 	prev := cpuSample{ts: time.Now().Add(-1 * time.Second), totalTicks: 0}
 	curr := cpuSample{ts: time.Now(), totalTicks: 100}
 	pct := cpuPercent(prev, curr)
-	lo := 50.0 * float64(numCPU)
-	hi := 200.0 * float64(numCPU)
-	if pct < lo || pct > hi {
-		t.Errorf("expected %.0f–%.0f%% (%d cores), got %.2f%%", lo, hi, numCPU, pct)
+	if pct < 50 || pct > 200 {
+		t.Errorf("expected 50–200%%, got %.2f%%", pct)
 	}
 }
 
