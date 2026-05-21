@@ -1190,8 +1190,13 @@ func (m Model) renderSidebar(width, height int) string {
 		if len(lines) >= height {
 			break
 		}
-		formatted := padOrTruncate(cl, width)
-		lines = append(lines, formatted)
+		wrapped := wrapANSI(cl, width)
+		for _, wl := range wrapped {
+			if len(lines) >= height {
+				break
+			}
+			lines = append(lines, wl)
+		}
 	}
 	
 	for len(lines) < height {
@@ -1212,6 +1217,117 @@ func padOrTruncate(s string, width int) string {
 	}
 	w = lipgloss.Width(clean)
 	return clean + strings.Repeat(" ", width-w)
+}
+
+// wrapANSI wraps an ANSI-styled string to fit within the given width,
+// preserving ANSI codes and adding a "↳ " wrap marker on continuation lines.
+func wrapANSI(s string, width int) []string {
+	if lipgloss.Width(s) <= width {
+		return []string{padded(s, width)}
+	}
+
+	const marker = "\u21b3 "
+	mw := lipgloss.Width(marker)
+	contWidth := width - mw
+	if contWidth < 2 {
+		contWidth = 2
+	}
+
+	var chunks []string
+	var buf strings.Builder
+	var openStyle []string // active ANSI style codes to reopen after splits
+	chunkWidth := width
+
+	r := strings.NewReader(s)
+	for {
+		ch, _, err := r.ReadRune()
+		if err != nil {
+			break
+		}
+
+		// ANSI escape sequence
+		if ch == '\x1b' {
+			seq := string(ch)
+			for {
+				next, _, err := r.ReadRune()
+				if err != nil {
+					break
+				}
+				seq += string(next)
+				if (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') {
+					break
+				}
+			}
+			// Track SGR codes (ending in 'm') for proper reopening.
+			if strings.HasSuffix(seq, "m") && len(seq) > 2 {
+				code := seq[2 : len(seq)-1]
+				if code == "0" || code == "" {
+					openStyle = nil // full reset
+				} else {
+					// Avoid duplicate style codes.
+					has := false
+					for _, s := range openStyle {
+						if s == seq {
+							has = true
+							break
+						}
+					}
+					if !has {
+						openStyle = append(openStyle, seq)
+					}
+				}
+			}
+			buf.WriteString(seq)
+			continue
+		}
+
+		// Check if adding this rune would exceed the current chunk width.
+		proposed := lipgloss.Width(buf.String()) + lipgloss.Width(string(ch))
+		if proposed > chunkWidth {
+			// Close active styles and save chunk.
+			if len(openStyle) > 0 {
+				buf.WriteString("\x1b[0m")
+			}
+			chunks = append(chunks, buf.String())
+			buf.Reset()
+			chunkWidth = contWidth
+
+			// Reopen active styles on the new chunk.
+			for _, style := range openStyle {
+				buf.WriteString(style)
+			}
+		}
+
+		buf.WriteRune(ch)
+	}
+
+	// Flush remaining content.
+	if buf.Len() > 0 {
+		if len(openStyle) > 0 {
+			buf.WriteString("\x1b[0m")
+		}
+		chunks = append(chunks, buf.String())
+	}
+
+	// Build final result with padding and wrap markers.
+	result := make([]string, 0, len(chunks))
+	for i, c := range chunks {
+		if i == 0 {
+			result = append(result, padded(c, width))
+		} else {
+			result = append(result, marker+padded(c, contWidth))
+		}
+	}
+	return result
+}
+
+// padded right-pads an ANSI-styled string to the given visible width.
+func padded(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
 }
 
 func stripAnsi(str string) string {
