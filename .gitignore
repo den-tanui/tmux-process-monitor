@@ -1,5 +1,6 @@
 # Build binaries
 bin/
+dist/
 tmux-process-monitor
 
 # Test and scratch files
