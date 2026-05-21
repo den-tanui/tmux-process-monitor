@@ -129,6 +129,7 @@ func New(
 		width:         80,
 		height:        24,
 		detailView:    vp,
+		sidebarOpen:   true,
 	}
 }
 

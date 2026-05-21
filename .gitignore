@@ -9,3 +9,5 @@ scratch_sparkline.go
 # Ignored docs directory as per user request
 docs/
 NOTES.md
+AGENTS.md
+.opencode
