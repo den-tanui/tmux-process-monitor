@@ -6,8 +6,8 @@ A high-performance, visually stunning Terminal User Interface (TUI) process moni
 
 ## 📸 Screenshots
 
-|      📈 Sparkline Graphs & Telemetry      |        🔍 Advanced Diagnostics Sidebar        |       ⌨️ Interactive Help Reference       |       🔌 Plugin Manager Integration       |
-| :---------------------------------------: | :-------------------------------------------: | :---------------------------------------: | :---------------------------------------: |
+|      📈 Sparkline Graphs & Telemetry      |        🔍 Advanced Diagnostics Sidebar        |       ⌨️ Interactive Help Reference       |         🔌 Plugin Manager Integration         |
+| :---------------------------------------: | :-------------------------------------------: | :---------------------------------------: | :-------------------------------------------: |
 | ![with-graph](screenshots/with-graph.png) | ![preview-witr](screenshots/preview-witr.png) | ![help-popup](screenshots/help-popup.png) | ![plugins-view](screenshots/plugins-view.png) |
 
 ---
@@ -65,12 +65,12 @@ Reload tmux with `tmux source-file ~/.tmux.conf`.
 
 You can customize binding keys, sizing, and updates directly in your `~/.tmux.conf`.
 
-| Option                               | Default | Description                                           |
-| ------------------------------------ | ------- | ----------------------------------------------------- |
+| Option                               | Default | Description                                                       |
+| ------------------------------------ | ------- | ----------------------------------------------------------------- |
 | `@tmux_process_monitor_key`          | `t`     | Key to open the process monitor popup (toggle overview with `o`). |
-| `@tmux_process_monitor_refresh_rate` | `2.0`   | Refresh rate in seconds.                              |
-| `@tmux_process_monitor_width`        | `80%`   | Width of the tmux popup window.                       |
-| `@tmux_process_monitor_height`       | `80%`   | Height of the tmux popup window.                      |
+| `@tmux_process_monitor_refresh_rate` | `2.0`   | Refresh rate in seconds.                                          |
+| `@tmux_process_monitor_width`        | `80%`   | Width of the tmux popup window.                                   |
+| `@tmux_process_monitor_height`       | `80%`   | Height of the tmux popup window.                                  |
 
 #### Example Custom Configuration
 
@@ -118,7 +118,7 @@ All controls are visually formatted in a centered bar at the bottom of the scree
 
 ## 💡 Inspiration
 
-- Based entirely on [tmux-task-monitor](https://.www.github.com/YlanAllouche/tmux-task-monitor) - Original layout and code written in python
+- Based entirely on [tmux-task-monitor](https://www.github.com/YlanAllouche/tmux-task-monitor) - Original layout and code written in python
 
 ## 📄 License
 
