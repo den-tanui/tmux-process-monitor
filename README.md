@@ -121,6 +121,7 @@ All controls are visually formatted in a centered bar at the bottom of the scree
 - Open popup focused on current window processes
 - Popup for signals
 - Adjust niceness
+- Show nice value in process view
 - Switch to tmux session+window/pane
 - Shortcut to pause/resume a process (send sigs)
 
