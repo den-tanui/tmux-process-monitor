@@ -1,21 +1,29 @@
 # 📊 tmux-process-monitor
 
-A high-performance, visually stunning Terminal User Interface (TUI) process monitor and manager designed exclusively for **tmux** popups. Built with **Go** and the **Charm Bubble Tea** ecosystem, it combines extreme speed, thread-aware tree tracing, real-time telemetry sparklines, and a scrollable diagnostics panel into a beautiful, lightweight workspace helper.
+A high-performance, visually stunning Terminal User Interface (TUI) process monitor and manager designed exclusively for **tmux** popups. Built with **Go** and the **Charm Bubble Tea** ecosystem, it combines lightning-fast rendering, intelligent process tree traversal, and interactive controls—all within a single tmux popup.
 
 ---
 
 ## 📸 Screenshots
 
-|      📈 Sparkline Graphs & Telemetry      |        🔍 Advanced Diagnostics Sidebar        |       ⌨️ Interactive Help Reference       |         🔌 Plugin Manager Integration         |
-| :---------------------------------------: | :-------------------------------------------: | :---------------------------------------: | :-------------------------------------------: |
-| ![with-graph](screenshots/with-graph.png) | ![preview-witr](screenshots/preview-witr.png) | ![help-popup](screenshots/help-popup.png) | ![plugins-view](screenshots/plugins-view.png) |
+### 📈 Sparkline Graphs & Telemetry
+![with-graph](screenshots/with-graph.png)
+
+### 🔍 Advanced Diagnostics Sidebar
+![preview-witr](screenshots/preview-witr.png)
+
+### ⌨️ Interactive Help Reference
+![help-popup](screenshots/help-popup.png)
+
+### 🔌 Plugin Manager Integration
+![plugins-view](screenshots/plugins-view.png)
 
 ---
 
 ## ✨ Features
 
 - **🚀 Lightning-Fast TUI:** Built using Go and Lipgloss with an extremely light memory footprint, delivering instant 60 FPS rendering within a tmux popup.
-- **🌳 Thread-Aware Process Tree:** Traverses `/proc/PID/task/*/children` recursively to trace hidden children and multi-threaded runtime tasks (e.g., Node.js, Go, Java threads) that generic trees fail to capture.
+- **🌳 Thread-Aware Process Tree:** Traverses `/proc/PID/task/*/children` recursively to trace hidden children and multi-threaded runtime tasks (e.g., Node.js, Go, Java threads) that generic tree utilities miss.
 - **📈 Live Sparkline Telemetry:** Renders real-time CPU and Memory usage history using Braille characters (NTCharts) in a toggleable split-graph view.
 - **🔍 Scrollable Diagnostics Sidebar:** An interactive side panel that runs async `witr` diagnostics on the selected process.
   - Features **mouse wheel scrolling** directly over the sidebar.
