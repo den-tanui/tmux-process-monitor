@@ -115,6 +115,14 @@ All controls are visually formatted in a centered bar at the bottom of the scree
 - **`witr` (Optional):** Install [witr](https://github.com/pranshuparmar/witr) for full verbose process diagnostics in the sidebar. If not installed, a detailed telemetry fallback pane is seamlessly rendered.
 
 ---
+## TODO
+- Better way to discover/parse plugins
+- Search feature and bar
+- Open popup focused on current window processes
+- Popup for signals
+- Adjust niceness
+- Switch to tmux session+window/pane
+- Shortcut to pause/resume a process (send sigs)
 
 ## 💡 Inspiration
 
