@@ -102,7 +102,6 @@ func (m Model) viewHelp() string {
 		"  " + StyleValue.Render("Esc") + "            Close detail / overlay",
 		"",
 		StyleLabel.Render("Views"),
-		"  " + StyleValue.Render("g") + "              Toggle graph view",
 		"  " + StyleValue.Render("o") + "              Toggle overview (all sessions)",
 		"  " + StyleValue.Render("p") + "              Toggle plugins dashboard",
 		"  " + StyleValue.Render("tab") + "            Toggle diagnostics sidebar",

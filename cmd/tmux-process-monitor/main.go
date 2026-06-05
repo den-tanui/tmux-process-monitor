@@ -13,7 +13,6 @@ import (
 	"github.com/den-tanui/tmux-process-monitor/internal/config"
 	itx "github.com/den-tanui/tmux-process-monitor/internal/tmux"
 	"github.com/den-tanui/tmux-process-monitor/ui"
-	"github.com/den-tanui/tmux-process-monitor/ui/graph"
 )
 
 func main() {
@@ -67,12 +66,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Build collector and graph store.
+	// Build collector.
 	coll := collector.New(tmuxClient, session)
-	gStore := graph.NewStore(60)
 
 	// Construct the model.
-	m := ui.New(coll, session, *window, rate, gStore)
+	m := ui.New(coll, session, *window, rate)
 
 	// Start overview mode if requested.
 	if *overview {

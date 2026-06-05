@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/den-tanui/tmux-process-monitor/internal/collector"
-	"github.com/den-tanui/tmux-process-monitor/ui/graph"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -23,7 +22,6 @@ type ViewMode int
 
 const (
 	ViewMain     ViewMode = iota // process list + tabs
-	ViewGraph                    // process list (top) + graph (bottom)
 	ViewDetail                   // full-screen process detail
 	ViewOverview                 // all-sessions table
 	ViewHelp                     // help overlay
@@ -64,7 +62,6 @@ type Model struct {
 	// ── Data ───────────────────────────────────────────────────────────
 	windows     []collector.WindowData
 	sessions    []collector.SessionData
-	graphStore  *graph.Store
 
 	// ── Collector ──────────────────────────────────────────────────────
 	coll *collector.Collector
@@ -117,7 +114,6 @@ func New(
 	session string,
 	initialWindow string,
 	refreshRate time.Duration,
-	graphStore *graph.Store,
 ) Model {
 	vp := viewport.New(80, 24)
 	return Model{
@@ -125,7 +121,6 @@ func New(
 		session:       session,
 		initialWindow: initialWindow,
 		refreshRate:   refreshRate,
-		graphStore:    graphStore,
 		width:         80,
 		height:        24,
 		detailView:    vp,
@@ -192,14 +187,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m = m.applyWindowData(activeWindows)
-
-		if m.graphStore != nil {
-			for _, w := range m.windows {
-				key := fmt.Sprintf("%s:%d", m.session, w.Index)
-				memPct := m.coll.MemPercent(w.MemTotal)
-				m.graphStore.Push(key, w.CPUTotal, memPct)
-			}
-		}
 
 		if !m.frozen {
 			m.cachedPluginsTree = m.buildPluginsTree()
@@ -354,13 +341,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = ViewHelp
 		}
 
-	case msg.String() == "g":
-		if m.mode == ViewGraph {
-			m.mode = ViewMain
-		} else {
-			m.mode = ViewGraph
-		}
-
 	case msg.String() == "o":
 		if m.mode == ViewOverview {
 			m.mode = ViewMain
@@ -458,7 +438,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.browsingSession = false
 				return m, collectSessionsCmd(m.coll)
 			}
-		case ViewMain, ViewGraph:
+		case ViewMain:
 			if m.currentTab < len(m.windows) {
 				procs := m.windows[m.currentTab].Processes
 				if m.selectedProc < len(procs) {
@@ -696,9 +676,7 @@ func (m Model) View() string {
 		leftModel.width = m.width - sidebarWidth - 1
 		
 		var leftView string
-		if m.mode == ViewGraph {
-			leftView = leftModel.viewWithGraph()
-		} else if m.mode == ViewPlugins {
+		if m.mode == ViewPlugins {
 			leftView = leftModel.viewPlugins()
 		} else {
 			leftView = leftModel.viewMain()
@@ -719,9 +697,6 @@ func (m Model) View() string {
 		return mainArea + "\n" + m.renderSeparator() + "\n" + m.renderStatsLine() + "\n" + m.renderFooter()
 	}
 
-	if m.mode == ViewGraph {
-		return m.viewWithGraph()
-	}
 	if m.mode == ViewPlugins {
 		return m.viewPlugins()
 	}
@@ -796,7 +771,7 @@ func (m Model) renderFooter() string {
 	}
 
 	shortcuts := []string{
-		"h/l:win", "j/k:nav", "Ent:view", "g:graph", "tab:side", "space:freeze", "p:plugins", "o:all", "x:kill", "s:sig", "?:help", "q:quit",
+		"h/l:win", "j/k:nav", "Ent:view", "tab:side", "space:freeze", "p:plugins", "o:all", "x:kill", "s:sig", "?:help", "q:quit",
 	}
 	joined := strings.Join(shortcuts, "  │  ")
 	return StyleFooter.Render(center(joined, m.width))

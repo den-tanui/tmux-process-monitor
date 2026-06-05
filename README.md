@@ -6,9 +6,6 @@ A high-performance, visually stunning Terminal User Interface (TUI) process moni
 
 ## 📸 Screenshots
 
-### 📈 Sparkline Graphs & Telemetry
-![with-graph](screenshots/with-graph.png)
-
 ### 🔍 Advanced Diagnostics Sidebar
 ![preview-witr](screenshots/preview-witr.png)
 
@@ -24,7 +21,6 @@ A high-performance, visually stunning Terminal User Interface (TUI) process moni
 
 - **🚀 Lightning-Fast TUI:** Built using Go and Lipgloss with an extremely light memory footprint, delivering instant 60 FPS rendering within a tmux popup.
 - **🌳 Thread-Aware Process Tree:** Traverses `/proc/PID/task/*/children` recursively to trace hidden children and multi-threaded runtime tasks (e.g., Node.js, Go, Java threads) that generic tree utilities miss.
-- **📈 Live Sparkline Telemetry:** Renders real-time CPU and Memory usage history using Braille characters (NTCharts) in a toggleable split-graph view.
 - **🔍 Scrollable Diagnostics Sidebar:** An interactive side panel that runs async `witr` diagnostics on the selected process.
   - Features **mouse wheel scrolling** directly over the sidebar.
   - Falls back to a custom, beautifully formatted process info view if `witr` is not installed.
@@ -99,7 +95,6 @@ All controls are visually formatted in a centered bar at the bottom of the scree
 - <kbd>h</kbd> / <kbd>l</kbd> or <kbd>←</kbd> / <kbd>→</kbd> : Switch tmux window tabs.
 - <kbd>j</kbd> / <kbd>k</kbd> or <kbd>↑</kbd> / <kbd>↓</kbd> : Navigate up and down the process tree.
 - <kbd>Enter</kbd> : Toggle tree nodes (collapse/expand children) / open full-screen `witr` view.
-- <kbd>g</kbd> : Toggle split-graph mode showing CPU & Memory sparklines.
 - <kbd>tab</kbd> : Toggle the diagnostics sidebar panel on/off.
 - <kbd>o</kbd> : Toggle global overview (all active tmux sessions).
 - <kbd>?</kbd> : Show or hide the Keyboard Reference overlay.
