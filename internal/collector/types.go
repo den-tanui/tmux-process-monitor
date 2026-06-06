@@ -19,9 +19,7 @@ type Process struct {
 	Depth       int     // tree depth (0 = pane shell)
 	IsLastChild bool    // used by tree-prefix renderer
 	HasChildren bool
-	IsPlugin    bool // detected as tmux plugin process
 	Status      string // running, sleeping, etc.
-	PluginName  string // parsed plugin name if IsPlugin is true
 }
 
 // WindowData aggregates all processes for one tmux window.

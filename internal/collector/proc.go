@@ -163,43 +163,7 @@ func scanChildrenFallback(ppid int) []int {
 	return children
 }
 
-// isPluginProcess returns true when the process is an actual tmux plugin.
-// It matches executables or scripts located inside a /plugins/ folder,
-// while filtering out standard system binaries and interactive developer tools.
-func isPluginProcess(pid int) bool {
-	exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-	if err == nil {
-		// 1. If the compiled binary itself is inside the plugins folder, it's a plugin!
-		if strings.Contains(exePath, "/plugins/") {
-			return true
-		}
-		
-		// Extract base name of the running executable
-		baseName := exePath
-		if idx := strings.LastIndex(exePath, "/"); idx >= 0 {
-			baseName = exePath[idx+1:]
-		}
-		
-		// 2. Blacklist system/interactive dev tools to prevent false positives when working in the dir
-		switch baseName {
-		case "git", "make", "nvim", "vim", "vi", "emacs", "nano", "go", "cargo", "npm", "yarn", "node", "python", "python3", "gcc", "clang", "gdb", "docker":
-			return false
-		}
-	}
 
-	// 3. Check if the command line arguments reference a script inside the plugins directory
-	cmd, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if err == nil {
-		cmdline := string(cmd)
-		for _, part := range strings.Split(cmdline, "\x00") {
-			if strings.Contains(part, "/plugins/") {
-				return true
-			}
-		}
-	}
-
-	return false
-}
 
 // totalRAMBytes returns the total physical memory in bytes.
 func totalRAMBytes() int64 {
@@ -280,49 +244,6 @@ func readState(pid int) string {
 	}
 }
 
-// getPluginName extracts a clean plugin name from process environment or command line.
-func getPluginName(pid int, fullCmd string) string {
-	// 1. Try environment variables (PWD or TMUX_PLUGIN_MANAGER_PATH)
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
-	if err == nil {
-		env := string(data)
-		for _, part := range strings.Split(env, "\x00") {
-			if strings.HasPrefix(part, "PWD=") {
-				pwd := part[4:]
-				pIdx := strings.Index(pwd, "/plugins/")
-				if pIdx >= 0 {
-					sub := pwd[pIdx+len("/plugins/"):]
-					end := strings.Index(sub, "/")
-					if end > 0 {
-						return sub[:end]
-					}
-					return sub
-				}
-			}
-		}
-	}
 
-	// 2. Fall back to command line path
-	idx := strings.Index(fullCmd, "/plugins/")
-	if idx >= 0 {
-		sub := fullCmd[idx+len("/plugins/"):]
-		end := strings.Index(sub, "/")
-		if end > 0 {
-			return sub[:end]
-		}
-		// Try spaces or args
-		endSpace := strings.Index(sub, " ")
-		if endSpace > 0 {
-			sub = sub[:endSpace]
-		}
-		endSlash := strings.Index(sub, "/")
-		if endSlash > 0 {
-			return sub[:endSlash]
-		}
-		return sub
-	}
-
-	return "tmux-plugin"
-}
 
 

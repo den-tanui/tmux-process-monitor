@@ -103,7 +103,6 @@ func (m Model) viewHelp() string {
 		"",
 		StyleLabel.Render("Views"),
 		"  " + StyleValue.Render("o") + "              Toggle overview (all sessions)",
-		"  " + StyleValue.Render("p") + "              Toggle plugins dashboard",
 		"  " + StyleValue.Render("tab") + "            Toggle diagnostics sidebar",
 		"  " + StyleValue.Render("space") + "          Freeze / unfreeze updates",
 		"  " + StyleValue.Render("?") + "              Show / hide this help",

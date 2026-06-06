@@ -25,7 +25,6 @@ const (
 	ViewDetail                   // full-screen process detail
 	ViewOverview                 // all-sessions table
 	ViewHelp                     // help overlay
-	ViewPlugins                  // tmux plugins dashboard
 )
 
 // InputMode identifies an active text input prompt.
@@ -104,8 +103,6 @@ type Model struct {
 	sidebarPID          int
 	sidebarScrollOffset int
 	frozen              bool
-	selectedPlugin      int
-	cachedPluginsTree   []collector.Process
 }
 
 // New constructs and returns an initialised Model.
@@ -187,10 +184,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m = m.applyWindowData(activeWindows)
-
-		if !m.frozen {
-			m.cachedPluginsTree = m.buildPluginsTree()
-		}
 
 		var cmd tea.Cmd
 		if m.sidebarOpen {
@@ -349,13 +342,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, collectSessionsCmd(m.coll)
 		}
 
-	case msg.String() == "p":
-		if m.mode == ViewPlugins {
-			m.mode = ViewMain
-		} else {
-			m.mode = ViewPlugins
-		}
-
 	case msg.String() == "tab":
 		m.sidebarOpen = !m.sidebarOpen
 
@@ -370,18 +356,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = m.prevMode
 		} else if m.mode == ViewOverview {
 			m.mode = ViewMain
-		} else if m.mode == ViewPlugins {
-			m.mode = ViewMain
 		}
 
 	case msg.String() == "left", msg.String() == "h", msg.String() == "H":
-		if m.mode == ViewOverview || m.mode == ViewPlugins {
+		if m.mode == ViewOverview {
 			break
 		}
 		m.prevTab()
 
 	case msg.String() == "right", msg.String() == "l", msg.String() == "L":
-		if m.mode == ViewOverview || m.mode == ViewPlugins {
+		if m.mode == ViewOverview {
 			break
 		}
 		m.nextTab()
@@ -390,9 +374,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.mode == ViewOverview {
 			m.browsingSession = true
 			m.selectedSession = (m.selectedSession + 1) % max1(len(m.sessions))
-		} else if m.mode == ViewPlugins {
-			pluginsTree := m.buildPluginsTree()
-			m.selectedPlugin = (m.selectedPlugin + 1) % max1(len(pluginsTree))
 		} else {
 			m.browsingProcs = true
 			if m.currentTab < len(m.windows) {
@@ -408,13 +389,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.selectedSession--
 			} else {
 				m.selectedSession = max0(len(m.sessions) - 1)
-			}
-		} else if m.mode == ViewPlugins {
-			pluginsTree := m.buildPluginsTree()
-			if m.selectedPlugin > 0 {
-				m.selectedPlugin--
-			} else {
-				m.selectedPlugin = max0(len(pluginsTree) - 1)
 			}
 		} else if m.browsingProcs {
 			if m.currentTab < len(m.windows) {
@@ -580,10 +554,9 @@ func (m Model) runWitrCmd(p collector.Process) tea.Cmd {
 						"PPID: %d\n\n"+
 						"CPU Usage: %.1f%%\n"+
 						"Memory RSS: %d MB (%.1f%%)\n"+
-						"Is Plugin: %v\n",
-					p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent, p.IsPlugin,
-				)
-				return witrMsg(fallback)
+			p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
+		)
+		return witrMsg(fallback)
 			}
 			return witrMsg(fmt.Sprintf("witr error: %v\n%s", err, string(out)))
 		}
@@ -650,7 +623,6 @@ var (
 	StyleSelected = lipgloss.NewStyle().Reverse(true).Bold(true)
 	StyleTree     = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fd7ff")).Bold(true)
 	StyleHigh     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f"))
-	StylePlugin   = lipgloss.NewStyle().Foreground(lipgloss.Color("#af87ff"))
 	StyleFooter   = lipgloss.NewStyle().Foreground(lipgloss.Color("#555577"))
 	StyleStatus   = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)
 	StyleErr      = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
@@ -675,12 +647,7 @@ func (m Model) View() string {
 		leftModel := m
 		leftModel.width = m.width - sidebarWidth - 1
 		
-		var leftView string
-		if m.mode == ViewPlugins {
-			leftView = leftModel.viewPlugins()
-		} else {
-			leftView = leftModel.viewMain()
-		}
+		leftView := leftModel.viewMain()
 		
 		leftViewLines := strings.Split(leftView, "\n")
 		leftViewNoFooter := strings.Join(leftViewLines[:len(leftViewLines)-3], "\n")
@@ -697,9 +664,6 @@ func (m Model) View() string {
 		return mainArea + "\n" + m.renderSeparator() + "\n" + m.renderStatsLine() + "\n" + m.renderFooter()
 	}
 
-	if m.mode == ViewPlugins {
-		return m.viewPlugins()
-	}
 	return m.viewMain()
 }
 
@@ -771,7 +735,7 @@ func (m Model) renderFooter() string {
 	}
 
 	shortcuts := []string{
-		"h/l:win", "j/k:nav", "Ent:view", "tab:side", "space:freeze", "p:plugins", "o:all", "x:kill", "s:sig", "?:help", "q:quit",
+		"h/l:win", "j/k:nav", "Ent:view", "tab:side", "space:freeze", "o:all", "x:kill", "s:sig", "?:help", "q:quit",
 	}
 	joined := strings.Join(shortcuts, "  │  ")
 	return StyleFooter.Render(center(joined, m.width))
@@ -870,12 +834,7 @@ func (m Model) renderProcessRow(proc collector.Process, idx int, all []collector
 
 	cmd := proc.Command
 
-	isSelected := false
-	if m.mode == ViewPlugins {
-		isSelected = idx == m.selectedPlugin
-	} else {
-		isSelected = m.browsingProcs && idx == m.selectedProc
-	}
+	isSelected := m.browsingProcs && idx == m.selectedProc
 	if isSelected {
 		// Horizontal scroll for the selected row.
 		if len(cmd) > maxCmdLen {
@@ -1031,10 +990,9 @@ func (m Model) runWitrSidebarCmd(p collector.Process) tea.Cmd {
 						"PPID: %d\n\n"+
 						"CPU Usage: %.1f%%\n"+
 						"Memory RSS: %d MB (%.1f%%)\n"+
-						"Is Plugin: %v\n",
-					p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent, p.IsPlugin,
-				)
-				return sidebarMsg{pid: p.PID, content: fallback}
+			p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
+		)
+		return sidebarMsg{pid: p.PID, content: fallback}
 			}
 			return sidebarMsg{pid: p.PID, content: fmt.Sprintf("witr error: %v\n%s", err, string(out))}
 		}
@@ -1046,60 +1004,6 @@ func (m Model) triggerSidebar(force bool) (Model, tea.Cmd) {
 	if !m.sidebarOpen {
 		return m, nil
 	}
-	if m.mode == ViewPlugins {
-		pluginsTree := m.buildPluginsTree()
-		if m.selectedPlugin >= len(pluginsTree) {
-			m.sidebarContent = ""
-			m.sidebarPID = 0
-			m.sidebarScrollOffset = 0
-			return m, nil
-		}
-		proc := pluginsTree[m.selectedPlugin]
-
-		// 1. Virtual plugin folder node
-		if proc.PID == 0 {
-			pName := proc.PluginName
-			if !force && m.sidebarContent != "" && m.sidebarPID == -m.selectedPlugin-1 {
-				return m, nil
-			}
-
-			m.sidebarPID = -m.selectedPlugin - 1
-			m.sidebarScrollOffset = 0
-
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("Plugin Name: %s\n", pName))
-			sb.WriteString(fmt.Sprintf("Status:      %s\n", proc.Status))
-			sb.WriteString(fmt.Sprintf("Total CPU:   %.1f%%\n", proc.CPUPercent))
-			sb.WriteString(fmt.Sprintf("Total Mem:   %d MB\n\n", proc.MemRSS/1024/1024))
-
-			sb.WriteString("Active Processes:\n")
-			sb.WriteString(strings.Repeat("─", 36) + "\n")
-
-			seen := make(map[int]bool)
-			for _, p := range pluginsTree {
-				if p.PID != 0 && p.PluginName == pName && !seen[p.PID] {
-					seen[p.PID] = true
-					sb.WriteString(fmt.Sprintf("● PID %d\n", p.PID))
-					sb.WriteString(fmt.Sprintf("  CPU: %.1f%%  Mem: %dMB\n", p.CPUPercent, p.MemRSS/1024/1024))
-					sb.WriteString(fmt.Sprintf("  Cmd: %s\n\n", truncate(p.FullCmdline, 32)))
-				}
-			}
-
-			m.sidebarContent = sb.String()
-			return m, nil
-		}
-
-		// 2. Concrete child process under a plugin folder
-		if !force && m.sidebarPID == proc.PID && m.sidebarContent != "" && m.sidebarContent != "Loading witr info..." {
-			return m, nil
-		}
-
-		m.sidebarPID = proc.PID
-		m.sidebarScrollOffset = 0
-		m.sidebarContent = "Loading witr info..."
-		return m, m.runWitrSidebarCmd(proc)
-	}
-
 	p := m.getSelectedProcess()
 	if p == nil {
 		m.sidebarContent = ""
