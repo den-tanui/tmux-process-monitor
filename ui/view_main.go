@@ -27,7 +27,7 @@ func (m Model) viewMain() string {
 	for len(sections) < m.height-3 {
 		sections = append(sections, "")
 	}
-	
+
 	sections = append(sections, m.renderSeparator())
 	sections = append(sections, m.renderStatsLine())
 	sections = append(sections, m.renderFooter())

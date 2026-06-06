@@ -211,6 +211,7 @@ func (c *Collector) sampleTree(pid int) {
 	}
 }
 
+// MemPercent returns the percentage of total system RAM that rss bytes represents.
 func (c *Collector) MemPercent(rss int64) float64 {
 	if c.totalRAM == 0 {
 		return 0
@@ -250,6 +251,3 @@ func (c *Collector) cachedPanePIDsFor(session string, windowIndex int) []int {
 func itoa(n int) string {
 	return strconv.Itoa(n)
 }
-
-
-

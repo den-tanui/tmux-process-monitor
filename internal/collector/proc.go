@@ -13,6 +13,8 @@ import (
 // ──────────────────────────────────────────────────────────────────────────────
 // /proc helpers (Linux only)
 
+const statusUnknown = "Unknown"
+
 var clocksPerSec = uint64(100) // default; overridden by init() if available
 
 func init() {
@@ -163,8 +165,6 @@ func scanChildrenFallback(ppid int) []int {
 	return children
 }
 
-
-
 // totalRAMBytes returns the total physical memory in bytes.
 func totalRAMBytes() int64 {
 	data, err := os.ReadFile("/proc/meminfo")
@@ -211,12 +211,12 @@ func nowTS() time.Time { return time.Now() }
 func readState(pid int) string {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
-		return "Unknown"
+		return statusUnknown
 	}
 	raw := string(data)
 	rp := strings.LastIndex(raw, ")")
 	if rp < 0 {
-		return "Unknown"
+		return statusUnknown
 	}
 	fields := strings.Fields(raw[rp+1:])
 	if len(fields) < 1 {
@@ -243,7 +243,3 @@ func readState(pid int) string {
 		return fields[0]
 	}
 }
-
-
-
-

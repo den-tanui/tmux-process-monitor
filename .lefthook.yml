@@ -1,0 +1,12 @@
+pre-commit:
+  parallel: true
+  commands:
+    test:
+      glob: "*.go"
+      run: go test -short ./...
+    lint:
+      glob: "*.go"
+      run: golangci-lint run ./...
+    build:
+      glob: "*.go"
+      run: make build
