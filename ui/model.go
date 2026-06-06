@@ -20,6 +20,7 @@ import (
 // ViewMode identifies which top-level view is displayed.
 type ViewMode int
 
+// ViewMode values for the main display mode.
 const (
 	ViewMain     ViewMode = iota // process list + tabs
 	ViewDetail                   // full-screen process detail
@@ -31,15 +32,23 @@ const (
 type InputMode int
 
 const (
-	InputNone   InputMode = iota
-	InputSignal           // entering a signal number
+	// InputNone is the default state — no input prompt active.
+	InputNone InputMode = iota
+	// InputSignal is active when the user is typing a signal number.
+	InputSignal
+)
+
+// String constants for key matching.
+const (
+	keyEnter = "enter"
+	keyEsc   = "esc"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Messages
 
 type tickMsg time.Time
-type dataMsg struct{ windows []collector.WindowData }
+
 type sessionDataMsg struct{ sessions []collector.SessionData }
 type statusMsg string // flash message
 type errMsg struct{ err error }
@@ -59,19 +68,19 @@ type Model struct {
 	refreshRate time.Duration
 
 	// ── Data ───────────────────────────────────────────────────────────
-	windows     []collector.WindowData
-	sessions    []collector.SessionData
+	windows  []collector.WindowData
+	sessions []collector.SessionData
 
 	// ── Collector ──────────────────────────────────────────────────────
 	coll *collector.Collector
 
 	// ── Navigation ─────────────────────────────────────────────────────
-	mode          ViewMode
-	prevMode      ViewMode
-	currentTab    int
-	selectedProc  int
-	hScrollOff    int  // horizontal scroll for long cmdlines
-	browsingProcs bool
+	mode            ViewMode
+	prevMode        ViewMode
+	currentTab      int
+	selectedProc    int
+	hScrollOff      int // horizontal scroll for long cmdlines
+	browsingProcs   bool
 	browsingSession bool
 	selectedSession int
 
@@ -128,10 +137,10 @@ func New(
 // SetMode allows callers (e.g. main.go) to pre-select the initial view mode.
 func (m *Model) SetMode(mode ViewMode) { m.mode = mode }
 
-
 // ──────────────────────────────────────────────────────────────────────────────
 // bubbletea interface
 
+// Init satisfies tea.Model and returns the initial tick command.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		collectSessionsCmd(m.coll),
@@ -156,6 +165,7 @@ func tickCmd(d time.Duration) tea.Cmd {
 // ──────────────────────────────────────────────────────────────────────────────
 // Update
 
+// Update satisfies tea.Model and handles all messages and key events.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
@@ -175,7 +185,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionDataMsg:
 		m.sessions = msg.sessions
-		
+
 		var activeWindows []collector.WindowData
 		for _, s := range m.sessions {
 			if s.Name == m.session {
@@ -217,13 +227,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detailView, cmd = m.detailView.Update(msg)
 			return m, cmd
 		}
-		if m.sidebarOpen && msg.X >= m.width - m.getSidebarWidth() && msg.Y < m.height - 3 {
+		if m.sidebarOpen && msg.X >= m.width-m.getSidebarWidth() && msg.Y < m.height-3 {
+			//nolint:staticcheck // msg.Type deprecated but MouseAction API not yet stable
 			if msg.Type == tea.MouseWheelUp {
 				m.sidebarScrollOffset--
 				if m.sidebarScrollOffset < 0 {
 					m.sidebarScrollOffset = 0
 				}
-			} else if msg.Type == tea.MouseWheelDown {
+			} else if msg.Type == tea.MouseWheelDown { //nolint:staticcheck
 				m.sidebarScrollOffset++
 			}
 			return m, nil
@@ -235,7 +246,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.mode == ViewDetail {
-			if msg.String() == "q" || msg.String() == "esc" || msg.String() == "enter" {
+			if msg.String() == "q" || msg.String() == keyEsc || msg.String() == keyEnter {
 				m.mode = ViewMain
 				return m, nil
 			}
@@ -351,10 +362,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, collectSessionsCmd(m.coll)
 		}
 
-	case msg.String() == "esc":
-		if m.mode == ViewHelp {
+	case msg.String() == keyEsc:
+		switch m.mode {
+		case ViewHelp:
 			m.mode = m.prevMode
-		} else if m.mode == ViewOverview {
+		case ViewOverview:
 			m.mode = ViewMain
 		}
 
@@ -401,7 +413,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case msg.String() == "enter":
+	case msg.String() == keyEnter:
 		switch m.mode {
 		case ViewOverview:
 			if m.browsingSession && m.selectedSession < len(m.sessions) {
@@ -512,7 +524,7 @@ func (m Model) selectedPID() int {
 
 func (m Model) handleSignalInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "enter":
+	case keyEnter:
 		sigNum := 0
 		if _, err := fmt.Sscan(m.inputBuffer, &sigNum); err == nil && sigNum > 0 {
 			m.inputMode = InputNone
@@ -521,7 +533,7 @@ func (m Model) handleSignalInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.inputMode = InputNone
 		m.inputBuffer = ""
-	case "esc":
+	case keyEsc:
 		m.inputMode = InputNone
 		m.inputBuffer = ""
 	case "backspace":
@@ -554,9 +566,9 @@ func (m Model) runWitrCmd(p collector.Process) tea.Cmd {
 						"PPID: %d\n\n"+
 						"CPU Usage: %.1f%%\n"+
 						"Memory RSS: %d MB (%.1f%%)\n"+
-			p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
-		)
-		return witrMsg(fallback)
+						p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
+				)
+				return witrMsg(fallback)
 			}
 			return witrMsg(fmt.Sprintf("witr error: %v\n%s", err, string(out)))
 		}
@@ -603,7 +615,7 @@ func copyToClipboard(text string) tea.Cmd {
 				continue
 			}
 			stdin.Write([]byte(text)) //nolint:errcheck
-			stdin.Close()
+			_ = stdin.Close()
 			if err := cmd.Wait(); err == nil {
 				return statusMsg("Copied to clipboard")
 			}
@@ -616,21 +628,32 @@ func copyToClipboard(text string) tea.Cmd {
 // Styles (shared across views)
 
 var (
-	StyleHeader   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#87d7ff"))
-	StyleLabel    = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700"))
-	StyleValue    = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87"))
-	StyleSep      = lipgloss.NewStyle().Foreground(lipgloss.Color("#444488"))
+	// StyleHeader is the bold blue style used for header lines.
+	StyleHeader = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#87d7ff"))
+	// StyleLabel is the gold style used for labels in the detail view.
+	StyleLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700"))
+	// StyleValue is the green style used for values in the detail view.
+	StyleValue = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87"))
+	// StyleSep is the dim purple style used for separators.
+	StyleSep = lipgloss.NewStyle().Foreground(lipgloss.Color("#444488"))
+	// StyleSelected is the reversed bold style for selected items.
 	StyleSelected = lipgloss.NewStyle().Reverse(true).Bold(true)
-	StyleTree     = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fd7ff")).Bold(true)
-	StyleHigh     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f"))
-	StyleFooter   = lipgloss.NewStyle().Foreground(lipgloss.Color("#555577"))
-	StyleStatus   = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)
-	StyleErr      = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
+	// StyleTree is the cyan bold style for tree connectors.
+	StyleTree = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fd7ff")).Bold(true)
+	// StyleHigh is the red style for high-usage values.
+	StyleHigh = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f"))
+	// StyleFooter is the muted style for the footer line.
+	StyleFooter = lipgloss.NewStyle().Foreground(lipgloss.Color("#555577"))
+	// StyleStatus is the green bold style for status messages.
+	StyleStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)
+	// StyleErr is the red bold style for error messages.
+	StyleErr = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
 // View dispatch
 
+// View satisfies tea.Model and renders the current UI state.
 func (m Model) View() string {
 	switch m.mode {
 	case ViewHelp:
@@ -643,23 +666,23 @@ func (m Model) View() string {
 
 	if m.sidebarOpen {
 		sidebarWidth := m.getSidebarWidth()
-		
+
 		leftModel := m
 		leftModel.width = m.width - sidebarWidth - 1
-		
+
 		leftView := leftModel.viewMain()
-		
+
 		leftViewLines := strings.Split(leftView, "\n")
 		leftViewNoFooter := strings.Join(leftViewLines[:len(leftViewLines)-3], "\n")
-		
-		rightView := m.renderSidebar(sidebarWidth, m.height - 3)
-		
+
+		rightView := m.renderSidebar(sidebarWidth, m.height-3)
+
 		var sepLines []string
-		for i := 0; i < m.height - 3; i++ {
+		for i := 0; i < m.height-3; i++ {
 			sepLines = append(sepLines, StyleSep.Render("│"))
 		}
 		sepStr := strings.Join(sepLines, "\n")
-		
+
 		mainArea := lipgloss.JoinHorizontal(lipgloss.Top, leftViewNoFooter, sepStr, rightView)
 		return mainArea + "\n" + m.renderSeparator() + "\n" + m.renderStatsLine() + "\n" + m.renderFooter()
 	}
@@ -944,14 +967,14 @@ func center(s string, w int) string {
 	return strings.Repeat(" ", pad) + s
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
 		return s
 	}
-	if max <= 3 {
-		return s[:max]
+	if maxLen <= 3 {
+		return s[:maxLen]
 	}
-	return s[:max-3] + "..."
+	return s[:maxLen-3] + "..."
 }
 
 func clamp(v, lo, hi int) int {
@@ -990,9 +1013,9 @@ func (m Model) runWitrSidebarCmd(p collector.Process) tea.Cmd {
 						"PPID: %d\n\n"+
 						"CPU Usage: %.1f%%\n"+
 						"Memory RSS: %d MB (%.1f%%)\n"+
-			p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
-		)
-		return sidebarMsg{pid: p.PID, content: fallback}
+						p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
+				)
+				return sidebarMsg{pid: p.PID, content: fallback}
 			}
 			return sidebarMsg{pid: p.PID, content: fmt.Sprintf("witr error: %v\n%s", err, string(out))}
 		}
@@ -1040,14 +1063,14 @@ func (m Model) getSidebarWidth() int {
 
 func (m Model) renderSidebar(width, height int) string {
 	var lines []string
-	
+
 	sidebarHeader := StyleHeader.Render(center("Process Diagnostics", width))
 	lines = append(lines, sidebarHeader, StyleSep.Render(strings.Repeat("─", width)))
-	
+
 	contentLines := strings.Split(m.sidebarContent, "\n")
 	totalContentLines := len(contentLines)
 	availLines := height - 2 // header + separator
-	
+
 	maxOffset := totalContentLines - availLines
 	if maxOffset < 0 {
 		maxOffset = 0
@@ -1058,13 +1081,13 @@ func (m Model) renderSidebar(width, height int) string {
 	if m.sidebarScrollOffset < 0 {
 		m.sidebarScrollOffset = 0
 	}
-	
+
 	if m.sidebarScrollOffset < len(contentLines) {
 		contentLines = contentLines[m.sidebarScrollOffset:]
 	} else {
 		contentLines = nil
 	}
-	
+
 	for _, cl := range contentLines {
 		if len(lines) >= height {
 			break
@@ -1077,25 +1100,12 @@ func (m Model) renderSidebar(width, height int) string {
 			lines = append(lines, wl)
 		}
 	}
-	
+
 	for len(lines) < height {
 		lines = append(lines, strings.Repeat(" ", width))
 	}
-	
-	return strings.Join(lines[:height], "\n")
-}
 
-func padOrTruncate(s string, width int) string {
-	w := lipgloss.Width(s)
-	if w <= width {
-		return s + strings.Repeat(" ", width-w)
-	}
-	clean := stripAnsi(s)
-	if len(clean) > width {
-		clean = clean[:width]
-	}
-	w = lipgloss.Width(clean)
-	return clean + strings.Repeat(" ", width-w)
+	return strings.Join(lines[:height], "\n")
 }
 
 // wrapANSI wraps an ANSI-styled string to fit within the given width,
@@ -1207,25 +1217,6 @@ func padded(s string, width int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", width-w)
-}
-
-func stripAnsi(str string) string {
-	var sb strings.Builder
-	inEscape := false
-	for i := 0; i < len(str); i++ {
-		if str[i] == '\x1b' {
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			if str[i] == 'm' || (str[i] >= 'A' && str[i] <= 'Z') || (str[i] >= 'a' && str[i] <= 'z') {
-				inEscape = false
-			}
-			continue
-		}
-		sb.WriteByte(str[i])
-	}
-	return sb.String()
 }
 
 func max0(n int) int {

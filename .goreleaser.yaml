@@ -1,0 +1,31 @@
+version: 2
+before:
+  hooks:
+    - go mod tidy
+builds:
+  - id: tmux-process-monitor
+    main: ./cmd/tmux-process-monitor
+    binary: tmux-process-monitor
+    ldflags: -s -w
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .Binary }}-{{ .Os }}-{{ .Arch }}"
+checksum:
+  name_template: "SHA256SUMS"
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^ci:"
+      - "^test:"
+release:
+  github:
+    owner: den-tanui
+    name: tmux-process-monitor

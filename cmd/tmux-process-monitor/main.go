@@ -10,7 +10,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/den-tanui/tmux-process-monitor/internal/collector"
-	"github.com/den-tanui/tmux-process-monitor/internal/config"
 	itx "github.com/den-tanui/tmux-process-monitor/internal/tmux"
 	"github.com/den-tanui/tmux-process-monitor/ui"
 )
@@ -18,17 +17,12 @@ import (
 func main() {
 	var (
 		window      = flag.String("w", "", "Start on this window name")
-		refreshRate = flag.Float64("r", 0, "Refresh interval in seconds (default: tmux option or 2.0)")
+		refreshRate = flag.Float64("r", 2.0, "Refresh interval in seconds")
 		overview    = flag.Bool("overview", false, "Open in overview (all-sessions) mode")
 	)
 	flag.Parse()
 
-	// Load config — CLI flags override tmux options.
-	cfg := config.Load()
-	if *refreshRate > 0 {
-		cfg.RefreshRate = *refreshRate
-	}
-	rate := time.Duration(float64(time.Second) * cfg.RefreshRate)
+	rate := time.Duration(float64(time.Second) * *refreshRate)
 
 	// Resolve session name: positional arg > current tmux session.
 	tmuxClient := itx.New()
