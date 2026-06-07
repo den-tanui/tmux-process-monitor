@@ -10,7 +10,7 @@ test/trace.tee
 # Ignored docs directory as per user request
 docs/
 NOTES.md
-AGENTS.md
+
 .opencode
 
 # MemPalace per-project files (issue #185)
