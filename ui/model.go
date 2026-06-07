@@ -717,14 +717,24 @@ func (m Model) renderHeader() string {
 	return center(summary, m.width)
 }
 
-// renderTabs returns the window tab bar (1 line).
+// renderTabs returns the window tab bar (1 line), scrollable horizontally
+// when many windows exceed the available width.
 func (m Model) renderTabs() string {
 	if len(m.windows) == 0 {
 		return ""
 	}
-	var parts []string
+
+	type tabItem struct {
+		style lipgloss.Style
+		label string
+		width int
+	}
+	sep := StyleSep.Render(" │ ")
+	sepWidth := lipgloss.Width(sep)
+
+	tabs := make([]tabItem, len(m.windows))
 	for i, w := range m.windows {
-		name := truncate(w.Name, 12)
+		label := fmt.Sprintf("%d.%s", w.Index, truncate(w.Name, 10))
 		var style lipgloss.Style
 		if i == m.currentTab {
 			style = StyleSelected
@@ -735,11 +745,72 @@ func (m Model) renderTabs() string {
 		} else {
 			style = StyleValue
 		}
-		parts = append(parts, style.Render("["+name+"]"))
+		tabs[i] = tabItem{
+			style: style,
+			label: label,
+			width: lipgloss.Width(style.Render("[" + label + "]")),
+		}
 	}
-	tabs := strings.Join(parts, StyleSep.Render(" │ "))
-	counter := StyleFooter.Render(fmt.Sprintf(" (%d/%d)", m.currentTab+1, len(m.windows)))
-	return StyleLabel.Render("Windows: ") + tabs + counter
+
+	prefix := "Windows: "
+	counter := fmt.Sprintf(" (%d/%d)", m.currentTab+1, len(m.windows))
+	avail := m.width - lipgloss.Width(StyleLabel.Render(prefix)) - lipgloss.Width(StyleFooter.Render(counter))
+
+	// Quick path: all tabs fit.
+	total := tabs[0].width
+	for i := 1; i < len(tabs); i++ {
+		total += sepWidth + tabs[i].width
+	}
+	if total <= avail {
+		var parts []string
+		for _, t := range tabs {
+			parts = append(parts, t.style.Render("["+t.label+"]"))
+		}
+		return StyleLabel.Render(prefix) + strings.Join(parts, sep) + StyleFooter.Render(counter)
+	}
+
+	// Scrollable: anchor at currentTab and expand outward.
+	start := m.currentTab
+	end := m.currentTab + 1
+	used := tabs[m.currentTab].width
+
+	for {
+		extended := false
+		if end < len(tabs) {
+			w := sepWidth + tabs[end].width
+			if used+w <= avail || end-start < 2 {
+				used += w
+				end++
+				extended = true
+			}
+		}
+		if start > 0 {
+			w := sepWidth + tabs[start-1].width
+			if used+w <= avail || end-start < 2 {
+				used += w
+				start--
+				extended = true
+			}
+		}
+		if !extended {
+			break
+		}
+	}
+
+	var parts []string
+	for i := start; i < end; i++ {
+		parts = append(parts, tabs[i].style.Render("["+tabs[i].label+"]"))
+	}
+	result := strings.Join(parts, sep)
+
+	if start > 0 {
+		result = "«" + result
+	}
+	if end < len(tabs) {
+		result = result + "»"
+	}
+
+	return StyleLabel.Render(prefix) + result + StyleFooter.Render(counter)
 }
 
 // renderSeparator returns a horizontal rule of width w.
