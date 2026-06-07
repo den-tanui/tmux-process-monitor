@@ -25,17 +25,15 @@ HEIGHT=$(get_option "@tmux_process_monitor_height" "80%")
 
 SESSION_NAME=$(tmux display-message -p '#{session_name}')
 WINDOW_NAME=$(tmux display-message -p '#{window_name}')
+WINDOW_INDEX=$(tmux display-message -p '#{window_index}')
 CWD=$(tmux display-message -p '#{pane_current_path}')
 
 # Pass --overview flag when called with that argument
-ARGS="$SESSION_NAME"
-ARGS="$ARGS -w $WINDOW_NAME"
-ARGS="$ARGS -r $REFRESH_RATE"
-
 if [ "$1" = "--overview" ]; then
 	ARGS="--overview -r $REFRESH_RATE"
 	TITLE=" tmux-process-monitor — System Overview "
 else
+	ARGS="-i $WINDOW_INDEX -w $WINDOW_NAME -r $REFRESH_RATE $SESSION_NAME"
 	TITLE=" tmux-process-monitor — Session: $SESSION_NAME "
 fi
 

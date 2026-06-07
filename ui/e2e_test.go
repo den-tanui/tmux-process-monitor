@@ -17,7 +17,7 @@ import (
 // is false. First "j" sets browsingProcs=true and increments selectedProc
 // to 1. To test selection at index 0, use the initial state without "j".
 func testModel() Model {
-	m := New(nil, "test-session", "", 2*time.Second)
+	m := New(nil, "test-session", "", -1, 2*time.Second)
 	m.width = 120
 	m.height = 40
 	m.windows = []collector.WindowData{
@@ -112,6 +112,70 @@ func TestKeyNav_jk_wrapsAtEnd(t *testing.T) {
 }
 
 // ── Tab navigation ─────────────────────────────────────────────
+
+func TestTabNav_initialWindowIndex(t *testing.T) {
+	// Start with initialWindowIndex=1 (should navigate to the window with Index=1).
+	m := New(nil, "test-session", "", 1, 2*time.Second)
+	m.width = 120
+	m.height = 40
+
+	// Simulate first sessionDataMsg arriving via Update.
+	sessions := []collector.SessionData{
+		{
+			Name: "test-session",
+			Windows: []collector.WindowData{
+				{Name: "editor", Index: 0},
+				{Name: "shell", Index: 1},
+				{Name: "logs", Index: 2},
+			},
+		},
+	}
+	result, _ := m.Update(sessionDataMsg{sessions})
+	m = result.(Model)
+
+	if m.currentTab != 1 {
+		t.Errorf("expected currentTab=1 for window Index=1, got %d", m.currentTab)
+	}
+	if m.windows[m.currentTab].Name != "shell" {
+		t.Errorf("expected window name 'shell' at tab 1, got %q", m.windows[m.currentTab].Name)
+	}
+
+	// Second update should preserve tab by index.
+	result, _ = m.Update(sessionDataMsg{sessions})
+	m = result.(Model)
+	if m.currentTab != 1 {
+		t.Errorf("expected currentTab=1 preserved on second update, got %d", m.currentTab)
+	}
+}
+
+func TestTabNav_initialWindowIndex_baseIndex1(t *testing.T) {
+	// Reproduce the user's scenario: base-index=1 (indices start at 1, not 0).
+	// User is in window 2 (opencode), passes -i 2.
+	m := New(nil, "tmux-process-monitor", "", 2, 2*time.Second)
+	m.width = 120
+	m.height = 40
+
+	sessions := []collector.SessionData{
+		{
+			Name: "tmux-process-monitor",
+			Windows: []collector.WindowData{
+				{Name: "nvim", Index: 1},
+				{Name: "opencode", Index: 2},
+				{Name: "zsh", Index: 3},
+				{Name: "zsh", Index: 4},
+			},
+		},
+	}
+	result, _ := m.Update(sessionDataMsg{sessions})
+	m = result.(Model)
+
+	if m.currentTab != 1 {
+		t.Errorf("expected currentTab=1 (opencode at Index=2), got %d", m.currentTab)
+	}
+	if m.windows[m.currentTab].Name != "opencode" {
+		t.Errorf("expected window 'opencode' at tab, got %q", m.windows[m.currentTab].Name)
+	}
+}
 
 func TestTabNav_hl(t *testing.T) {
 	m := testModel()

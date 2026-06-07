@@ -17,9 +17,19 @@ import (
 func main() {
 	var (
 		window      = flag.String("w", "", "Start on this window name")
+		windowIndex = flag.Int("i", -1, "Start on this window index")
 		refreshRate = flag.Float64("r", 2.0, "Refresh interval in seconds")
 		overview    = flag.Bool("overview", false, "Open in overview (all-sessions) mode")
 	)
+
+	// Go's flag.Parse() stops at the first non-flag argument.
+	// Move a leading positional session arg to the end so -i/-w/-r are parsed.
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] != "" && args[0][0] != '-' {
+		sessionArg := args[0]
+		args = append(args[1:], sessionArg)
+		os.Args = append([]string{os.Args[0]}, args...)
+	}
 	flag.Parse()
 
 	rate := time.Duration(float64(time.Second) * *refreshRate)
@@ -64,7 +74,7 @@ func main() {
 	coll := collector.New(tmuxClient, session)
 
 	// Construct the model.
-	m := ui.New(coll, session, *window, rate)
+	m := ui.New(coll, session, *window, *windowIndex, rate)
 
 	// Start overview mode if requested.
 	if *overview {

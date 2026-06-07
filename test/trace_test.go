@@ -43,7 +43,7 @@ func TestTickCycleTrace(t *testing.T) {
 
 	coll := collector.New(tmuxClient, session)
 	coll.WarmUp()
-	m := ui.New(coll, session, "", 2*time.Second)
+	m := ui.New(coll, session, "", -1, 2*time.Second)
 
 	tm := teatest.NewTestModel(t, m)
 	tm.Send(tea.WindowSizeMsg{Width: 120, Height: 40})

@@ -89,7 +89,8 @@ type Model struct {
 	inputBuffer string
 
 	// ── Window filter ──────────────────────────────────────────────────
-	initialWindow string // navigate to this window on first load
+	initialWindow      string // navigate to this window on first load (name fallback)
+	initialWindowIndex int    // navigate to this window on first load (index, -1 = unset)
 
 	// ── Status flash ───────────────────────────────────────────────────
 	statusMsg    string
@@ -119,18 +120,20 @@ func New(
 	coll *collector.Collector,
 	session string,
 	initialWindow string,
+	initialWindowIndex int,
 	refreshRate time.Duration,
 ) Model {
 	vp := viewport.New(80, 24)
 	return Model{
-		coll:          coll,
-		session:       session,
-		initialWindow: initialWindow,
-		refreshRate:   refreshRate,
-		width:         80,
-		height:        24,
-		detailView:    vp,
-		sidebarOpen:   true,
+		coll:               coll,
+		session:            session,
+		initialWindow:      initialWindow,
+		initialWindowIndex: initialWindowIndex,
+		refreshRate:        refreshRate,
+		width:              80,
+		height:             24,
+		detailView:         vp,
+		sidebarOpen:        true,
 	}
 }
 
@@ -273,14 +276,24 @@ func (m Model) applyWindowData(windows []collector.WindowData) Model {
 		return m
 	}
 
-	// First load: navigate to initialWindow.
-	if len(m.windows) == 0 && m.initialWindow != "" {
-		for i, w := range windows {
-			if w.Name == m.initialWindow {
-				m.currentTab = i
-				break
+	// First load: navigate to initial window (index preferred, name fallback).
+	if len(m.windows) == 0 {
+		if m.initialWindowIndex >= 0 {
+			for i, w := range windows {
+				if w.Index == m.initialWindowIndex {
+					m.currentTab = i
+					break
+				}
+			}
+		} else if m.initialWindow != "" {
+			for i, w := range windows {
+				if w.Name == m.initialWindow {
+					m.currentTab = i
+					break
+				}
 			}
 		}
+		m.initialWindowIndex = -1
 		m.initialWindow = ""
 	} else if len(m.windows) > 0 {
 		// Preserve by index, then by name.
