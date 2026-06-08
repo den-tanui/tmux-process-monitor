@@ -116,9 +116,9 @@ Quick reference:
 
 ## Code Formatting
 
-- **Go files:** Run `gofmt -w <file>` immediately after every edit to any `.go` file
-- **Bash files:** Run `shellcheck <file>` immediately after every edit to any `.sh` file (install: `pacman -S shellcheck`)
-- Both must pass with zero warnings before committing
+- **Go files:** Handled automatically by `golangci-lint` (configured with `gofmt`) in the pre-commit hook — no manual `gofmt -w` needed.
+- **Bash files:** Run `shellcheck <file>` after editing any `.sh` file (install: `pacman -S shellcheck`).
+- Both must pass with zero warnings before committing.
 
 ## Plugin Integration
 
