@@ -531,8 +531,8 @@ func TestView_helpMode(t *testing.T) {
 	m = result.(Model)
 
 	view := m.View()
-	if !strings.Contains(view, "Help") && !strings.Contains(view, "help") {
-		t.Error("expected help content in view when in help mode")
+	if !strings.Contains(view, "Keyboard Reference") {
+		t.Errorf("expected help content in view when in help mode, got:\n%s", view)
 	}
 }
 
@@ -550,8 +550,8 @@ func TestSearch_activate(t *testing.T) {
 	}
 	// Footer should show search keys.
 	view := m.View()
-	if !strings.Contains(view, "ctrl+t:show-children") {
-		t.Errorf("expected search footer with ctrl+t:show-children, got:\n%s", view)
+	if !strings.Contains(view, "ctrl+t") {
+		t.Errorf("expected search footer with ctrl+t, got:\n%s", view)
 	}
 	if !strings.Contains(view, "esc:cancel") {
 		t.Errorf("expected search footer with esc:cancel, got:\n%s", view)

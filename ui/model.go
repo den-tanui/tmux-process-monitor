@@ -840,6 +840,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.selectedPIDs[p.PID] = struct{}{}
 				}
 			}
+			if len(m.selectedPIDs) > 0 {
+				m.showingMultiSelect = true
+			}
 		}
 
 	case msg.String() == "ctrl+d":
@@ -856,6 +859,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				if _, ok := m.selectedPIDs[p.PID]; ok {
 					delete(m.selectedPIDs, p.PID)
+					delete(m.sidebarCache, p.PID)
 				} else {
 					m.selectedPIDs[p.PID] = struct{}{}
 				}
@@ -896,9 +900,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				for _, pid := range descPIDs {
 					if allSel {
 						delete(m.selectedPIDs, pid)
+						delete(m.sidebarCache, pid)
 					} else {
 						m.selectedPIDs[pid] = struct{}{}
 					}
+				}
+				if len(m.selectedPIDs) > 0 {
+					m.showingMultiSelect = true
+				} else {
+					m.showingMultiSelect = false
 				}
 			}
 		}
@@ -1471,9 +1481,8 @@ func (m Model) renderFooter() string {
 			scopeLabel = "this-session"
 		}
 		shortcuts := []string{
-			"j/k:nav", "Ent:view", "ctrl+t:" + childrenLabel, "ctrl+s:" + scopeLabel,
-			"tab:select", "ctrl+a:all", "ctrl+d:none", "ctrl+u:inv", "ctrl+e:chld",
-			"ctrl+h:help", "esc:cancel", "q:quit",
+			"j/k:nav", "tab:select", "ctrl+t:" + childrenLabel, "ctrl+s:" + scopeLabel,
+			"esc:cancel", "ctrl+h:help",
 		}
 		joined := strings.Join(shortcuts, "  │  ")
 		return StyleFooter.Render(center(joined, m.width))
@@ -1483,9 +1492,7 @@ func (m Model) renderFooter() string {
 	}
 
 	shortcuts := []string{
-		"h/l:win", "j/k:nav", "Ent:view", "ctrl+p:side", "tab:select",
-		"ctrl+a:all", "ctrl+d:none", "ctrl+u:inv", "ctrl+e:tree",
-		"space:freeze", "o:all", "x:kill", "s:sig", "?:help", "ctrl+h:help", "q:quit",
+		"h/l:win", "j/k:nav", "space:freeze", "/:search", "ctrl+h:help",
 	}
 	joined := strings.Join(shortcuts, "  │  ")
 	return StyleFooter.Render(center(joined, m.width))
