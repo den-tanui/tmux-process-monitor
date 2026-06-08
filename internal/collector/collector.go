@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -116,15 +117,22 @@ func (c *Collector) collectWindow(w itx.Window) WindowData {
 
 func (c *Collector) collectWindowForSession(session string, w itx.Window) WindowData {
 	wd := WindowData{
-		Name:     w.Name,
-		Index:    w.Index,
-		PanePIDs: c.cachedPanePIDsFor(session, w.Index),
+		Name:  w.Name,
+		Index: w.Index,
+		Panes: c.cachedPanesFor(session, w.Index),
 	}
-	for _, pid := range wd.PanePIDs {
-		procs := c.buildTree(pid, 0, -1, nil)
-		for _, p := range procs {
-			wd.CPUTotal += p.CPUPercent
-			wd.MemTotal += p.MemRSS
+	for i, p := range wd.Panes {
+		if i > 0 {
+			wd.Processes = append(wd.Processes, Process{
+				PID:     0,
+				Command: fmt.Sprintf("── pane %d ──", p.Index),
+				Depth:   -1,
+			})
+		}
+		procs := c.buildTree(p.PID, 0, -1, nil)
+		for _, pp := range procs {
+			wd.CPUTotal += pp.CPUPercent
+			wd.MemTotal += pp.MemRSS
 			wd.ProcessCount++
 		}
 		wd.Processes = append(wd.Processes, procs...)
@@ -223,10 +231,15 @@ func (c *Collector) MemPercent(rss int64) float64 {
 // Pane PID cache
 
 func (c *Collector) cachedPanePIDs(windowIndex int) []int {
-	return c.cachedPanePIDsFor(c.session, windowIndex)
+	panes := c.cachedPanesFor(c.session, windowIndex)
+	pids := make([]int, len(panes))
+	for i, p := range panes {
+		pids[i] = p.PID
+	}
+	return pids
 }
 
-func (c *Collector) cachedPanePIDsFor(session string, windowIndex int) []int {
+func (c *Collector) cachedPanesFor(session string, windowIndex int) []itx.PaneInfo {
 	key := session + ":" + itoa(windowIndex)
 
 	c.mu.RLock()
@@ -234,18 +247,18 @@ func (c *Collector) cachedPanePIDsFor(session string, windowIndex int) []int {
 	c.mu.RUnlock()
 
 	if ok && time.Since(entry.ts) < paneCacheTTL {
-		return entry.pids
+		return entry.panes
 	}
 
-	pids, err := c.tmux.ListPanePIDs(session, windowIndex)
+	panes, err := c.tmux.ListPanes(session, windowIndex)
 	if err != nil {
 		return nil
 	}
 
 	c.mu.Lock()
-	c.paneCache[key] = paneCacheEntry{ts: nowTS(), pids: pids}
+	c.paneCache[key] = paneCacheEntry{ts: nowTS(), panes: panes}
 	c.mu.Unlock()
-	return pids
+	return panes
 }
 
 func itoa(n int) string {

@@ -2,7 +2,11 @@
 // Linux /proc filesystem to build a process tree with CPU% and memory stats.
 package collector
 
-import "time"
+import (
+	"time"
+
+	itx "github.com/den-tanui/tmux-process-monitor/internal/tmux"
+)
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Domain types
@@ -26,7 +30,7 @@ type Process struct {
 type WindowData struct {
 	Name         string
 	Index        int
-	PanePIDs     []int
+	Panes        []itx.PaneInfo
 	Processes    []Process
 	CPUTotal     float64
 	MemTotal     int64
@@ -52,6 +56,6 @@ type cpuSample struct {
 }
 
 type paneCacheEntry struct {
-	ts   time.Time
-	pids []int
+	ts    time.Time
+	panes []itx.PaneInfo
 }
