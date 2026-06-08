@@ -425,7 +425,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.browsingProcs = true
 			if m.currentTab < len(m.windows) {
 				procs := m.windows[m.currentTab].Processes
-				m.selectedProc = (m.selectedProc + 1) % max1(len(procs))
+				if len(procs) > 0 {
+					start := m.selectedProc
+					for {
+						m.selectedProc = (m.selectedProc + 1) % len(procs)
+						if procs[m.selectedProc].PID != 0 {
+							break
+						}
+						if m.selectedProc == start {
+							break
+						}
+					}
+				}
 			}
 		}
 
@@ -440,10 +451,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.browsingProcs {
 			if m.currentTab < len(m.windows) {
 				procs := m.windows[m.currentTab].Processes
-				if m.selectedProc > 0 {
-					m.selectedProc--
-				} else {
-					m.selectedProc = max0(len(procs) - 1)
+				if len(procs) > 0 {
+					start := m.selectedProc
+					for {
+						if m.selectedProc > 0 {
+							m.selectedProc--
+						} else {
+							m.selectedProc = len(procs) - 1
+						}
+						if procs[m.selectedProc].PID != 0 {
+							break
+						}
+						if m.selectedProc == start {
+							break
+						}
+					}
 				}
 			}
 		}
@@ -515,14 +537,29 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) nextTab() {
 	if len(m.windows) > 0 {
 		m.currentTab = (m.currentTab + 1) % len(m.windows)
-		m.selectedProc = 0
+		m.skipSeparator()
 	}
 }
 
 func (m *Model) prevTab() {
 	if len(m.windows) > 0 {
 		m.currentTab = (m.currentTab - 1 + len(m.windows)) % len(m.windows)
-		m.selectedProc = 0
+		m.skipSeparator()
+	}
+}
+
+func (m *Model) skipSeparator() {
+	m.selectedProc = 0
+	if m.currentTab >= len(m.windows) {
+		return
+	}
+	procs := m.windows[m.currentTab].Processes
+	for i, p := range procs {
+		if p.PID == 0 {
+			continue
+		}
+		m.selectedProc = i
+		break
 	}
 }
 

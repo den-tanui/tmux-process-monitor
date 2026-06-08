@@ -121,14 +121,12 @@ func (c *Collector) collectWindowForSession(session string, w itx.Window) Window
 		Index: w.Index,
 		Panes: c.cachedPanesFor(session, w.Index),
 	}
-	for i, p := range wd.Panes {
-		if i > 0 {
-			wd.Processes = append(wd.Processes, Process{
-				PID:     0,
-				Command: fmt.Sprintf("── pane %d ──", p.Index),
-				Depth:   -1,
-			})
-		}
+	for _, p := range wd.Panes {
+		wd.Processes = append(wd.Processes, Process{
+			PID:     0,
+			Command: fmt.Sprintf("── pane %d ──", p.Index),
+			Depth:   -1,
+		})
 		procs := c.buildTree(p.PID, 0, -1, nil)
 		for _, pp := range procs {
 			wd.CPUTotal += pp.CPUPercent
