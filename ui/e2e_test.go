@@ -113,11 +113,10 @@ func TestKeyNav_jk_wrapsAtEnd(t *testing.T) {
 
 // ── Pane awareness ─────────────────────────────────────────────
 
-func TestPaneNav_jk_skipsSeparator(t *testing.T) {
+func TestPaneNav_jk_hitsSeparators(t *testing.T) {
 	m := testModel()
 	m.windows[0].Panes = nil
 	m.windows[0].Processes = []collector.Process{
-		{PID: 0, Command: "── pane 0 ──", Depth: -1},
 		{PID: 10, Command: "zsh", Depth: 0},
 		{PID: 11, Command: "vim", Depth: 1},
 		{PID: 0, Command: "── pane 1 ──", Depth: -1},
@@ -127,51 +126,32 @@ func TestPaneNav_jk_skipsSeparator(t *testing.T) {
 	m.selectedProc = 0
 	m.browsingProcs = true
 
-	// Starting at proc 0 (PID=0 separator), j should skip to proc 1 (zsh, PID=10).
+	// j: zsh → vim
 	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	m = result.(Model)
-	if m.selectedProc != 1 || m.windows[0].Processes[m.selectedProc].PID != 10 {
-		t.Errorf("after j: expected selectedProc=1 (PID=10), got selectedProc=%d (PID=%d)", m.selectedProc, m.windows[0].Processes[m.selectedProc].PID)
+	if m.selectedProc != 1 || m.windows[0].Processes[m.selectedProc].PID != 11 {
+		t.Errorf("after j: expected selectedProc=1 (PID=11), got selectedProc=%d (PID=%d)", m.selectedProc, m.windows[0].Processes[m.selectedProc].PID)
 	}
 
-	// j again: proc 2 (vim, PID=11)
+	// j: vim → pane 1 separator (reachable)
 	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	m = result.(Model)
-	if m.selectedProc != 2 || m.windows[0].Processes[m.selectedProc].PID != 11 {
-		t.Errorf("after second j: expected selectedProc=2 (PID=11), got selectedProc=%d (PID=%d)", m.selectedProc, m.windows[0].Processes[m.selectedProc].PID)
+	if m.selectedProc != 2 || m.windows[0].Processes[m.selectedProc].PID != 0 {
+		t.Errorf("after j: expected selectedProc=2 (PID=0 separator), got selectedProc=%d (PID=%d)", m.selectedProc, m.windows[0].Processes[m.selectedProc].PID)
 	}
 
-	// j again: skip pane 1 separator, land on bash (PID=20)
+	// j: separator → bash
 	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	m = result.(Model)
-	if m.selectedProc != 4 || m.windows[0].Processes[m.selectedProc].PID != 20 {
-		t.Errorf("after third j: expected selectedProc=4 (PID=20), got selectedProc=%d (PID=%d)", m.selectedProc, m.windows[0].Processes[m.selectedProc].PID)
+	if m.selectedProc != 3 || m.windows[0].Processes[m.selectedProc].PID != 20 {
+		t.Errorf("after j: expected selectedProc=3 (PID=20), got selectedProc=%d (PID=%d)", m.selectedProc, m.windows[0].Processes[m.selectedProc].PID)
 	}
 
-	// k: go back to vim (PID=11), skipping pane 1 separator
+	// k: bash → separator
 	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 	m = result.(Model)
-	if m.selectedProc != 2 || m.windows[0].Processes[m.selectedProc].PID != 11 {
-		t.Errorf("after k: expected selectedProc=2 (PID=11), got selectedProc=%d (PID=%d)", m.selectedProc, m.windows[0].Processes[m.selectedProc].PID)
-	}
-}
-
-func TestPaneNav_k_skipsSeparatorGoingUp(t *testing.T) {
-	m := testModel()
-	m.windows[0].Processes = []collector.Process{
-		{PID: 10, Command: "zsh", Depth: 0},
-		{PID: 0, Command: "── pane 0 ──", Depth: -1},
-		{PID: 20, Command: "bash", Depth: 0},
-	}
-	m.currentTab = 0
-	m.selectedProc = 2
-	m.browsingProcs = true
-
-	// k from proc 2 (bash) should skip the separator and land on proc 0 (zsh).
-	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
-	m = result.(Model)
-	if m.selectedProc != 0 || m.windows[0].Processes[m.selectedProc].PID != 10 {
-		t.Errorf("after k: expected selectedProc=0 (PID=10), got selectedProc=%d (PID=%d)", m.selectedProc, m.windows[0].Processes[m.selectedProc].PID)
+	if m.selectedProc != 2 || m.windows[0].Processes[m.selectedProc].PID != 0 {
+		t.Errorf("after k: expected selectedProc=2 (PID=0 separator), got selectedProc=%d (PID=%d)", m.selectedProc, m.windows[0].Processes[m.selectedProc].PID)
 	}
 }
 
@@ -187,6 +167,10 @@ func TestPaneSeparator_renders(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "── pane 1 ──") {
 		t.Errorf("expected pane separator in view, got:\n%s", view)
+	}
+	// Pane 0 should have no separator since it's the first/only pane.
+	if strings.Contains(view, "── pane 0 ──") {
+		t.Errorf("unexpected pane 0 separator in single-pane list")
 	}
 }
 
@@ -204,7 +188,6 @@ func TestPaneNav_initialPaneIndex(t *testing.T) {
 					Index: 0,
 					Panes: nil,
 					Processes: []collector.Process{
-						{PID: 0, Command: "── pane 0 ──", Depth: -1},
 						{PID: 10, Command: "zsh", Depth: 0},
 						{PID: 0, Command: "── pane 1 ──", Depth: -1},
 						{PID: 20, Command: "bash", Depth: 0},
@@ -219,8 +202,8 @@ func TestPaneNav_initialPaneIndex(t *testing.T) {
 	if !m.browsingProcs {
 		t.Error("expected browsingProcs=true after initialPaneIndex auto-select")
 	}
-	if m.selectedProc != 3 {
-		t.Errorf("expected selectedProc=3 (first process in pane 1), got %d", m.selectedProc)
+	if m.selectedProc != 2 {
+		t.Errorf("expected selectedProc=2 (first process in pane 1), got %d", m.selectedProc)
 	}
 	if m.windows[0].Processes[m.selectedProc].PID != 20 {
 		t.Errorf("expected PID=20 at selectedProc, got PID=%d", m.windows[0].Processes[m.selectedProc].PID)
