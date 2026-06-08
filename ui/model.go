@@ -237,7 +237,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		var cmd tea.Cmd
-		if m.sidebarOpen {
+		if m.sidebarOpen && !m.frozen {
 			m, cmd = m.triggerSidebar(true) // force refresh
 		}
 		return m, cmd
@@ -252,6 +252,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sidebarMsg:
+		if m.frozen {
+			return m, nil
+		}
 		if m.sidebarOpen {
 			if m.showingMultiSelect {
 				if _, ok := m.selectedPIDs[msg.pid]; ok {
