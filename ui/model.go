@@ -36,6 +36,8 @@ const (
 	InputNone InputMode = iota
 	// InputSignal is active when the user is typing a signal number.
 	InputSignal
+	// InputSearch is active when the user is typing a search query.
+	InputSearch
 )
 
 // String constants for key matching.
@@ -56,6 +58,14 @@ type witrMsg string
 type sidebarMsg struct {
 	pid     int
 	content string
+}
+
+type searchResult struct {
+	sessionIdx int
+	windowIdx  int
+	procIdx    int
+	proc       collector.Process
+	isChild    bool
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -114,6 +124,18 @@ type Model struct {
 	sidebarPID          int
 	sidebarScrollOffset int
 	frozen              bool
+
+	// ── Search ────────────────────────────────────────────────────────
+	searchQuery        string
+	searchResults      []searchResult
+	searchSelected     int
+	searchAllSessions  bool
+	searchShowChildren bool
+
+	// ── Multi-select ──────────────────────────────────────────────────
+	selectedPIDs       map[int]struct{}
+	showingMultiSelect bool
+	sidebarCache       map[int]string // PID → witr -t output (multi-select)
 }
 
 // New constructs and returns an initialised Model.
@@ -137,6 +159,8 @@ func New(
 		height:             24,
 		detailView:         vp,
 		sidebarOpen:        true,
+		selectedPIDs:       make(map[int]struct{}),
+		sidebarCache:       make(map[int]string),
 	}
 }
 
@@ -201,6 +225,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m = m.applyWindowData(activeWindows)
 
+		// Clean up dead PIDs from selection set.
+		m = m.cleanupDeadPIDSelections()
+
+		// Rebuild search results if search is active.
+		if m.inputMode == InputSearch {
+			m.searchResults = m.rebuildSearchResults()
+			if m.searchSelected >= len(m.searchResults) {
+				m.searchSelected = max0(len(m.searchResults) - 1)
+			}
+		}
+
 		var cmd tea.Cmd
 		if m.sidebarOpen {
 			m, cmd = m.triggerSidebar(true) // force refresh
@@ -217,8 +252,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sidebarMsg:
-		if m.sidebarOpen && msg.pid == m.sidebarPID {
-			m.sidebarContent = msg.content
+		if m.sidebarOpen {
+			if m.showingMultiSelect {
+				if _, ok := m.selectedPIDs[msg.pid]; ok {
+					m.sidebarCache[msg.pid] = msg.content
+				}
+			} else if msg.pid == m.sidebarPID {
+				m.sidebarContent = msg.content
+			}
 		}
 		return m, nil
 
@@ -360,6 +401,407 @@ func (m Model) applyWindowData(windows []collector.WindowData) Model {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Search
+
+// rebuildSearchResults rebuilds the search results slice based on the current
+// query, scope, and children toggle.
+func (m Model) rebuildSearchResults() []searchResult {
+	q := strings.ToLower(strings.TrimSpace(m.searchQuery))
+	if q == "" {
+		return nil
+	}
+
+	type match struct {
+		sr   searchResult
+		tier int // 0=exact, 1=prefix, 2=substring
+	}
+
+	var raw []match
+
+	// Determine scope: current windows or all sessions.
+	type winRef struct {
+		sessionIdx int
+		windowIdx  int
+		procs      []collector.Process
+	}
+	var refs []winRef
+	if m.searchAllSessions {
+		for si, sd := range m.sessions {
+			for wi, w := range sd.Windows {
+				refs = append(refs, winRef{sessionIdx: si, windowIdx: wi, procs: w.Processes})
+			}
+		}
+	} else {
+		refs = append(refs, winRef{sessionIdx: -1, windowIdx: m.currentTab, procs: m.windows[m.currentTab].Processes})
+	}
+
+	for _, ref := range refs {
+		for pi, p := range ref.procs {
+			if p.PID == 0 {
+				continue
+			}
+			tier := matchField(q, p.Command)
+			if tier < 0 {
+				tier = matchField(q, p.FullCmdline)
+			}
+			if tier < 0 {
+				continue
+			}
+			raw = append(raw, match{
+				sr:   searchResult{sessionIdx: ref.sessionIdx, windowIdx: ref.windowIdx, procIdx: pi, proc: p},
+				tier: tier,
+			})
+		}
+	}
+
+	// Sort: tier ascending, then CPU% descending.
+	for i := 0; i < len(raw); i++ {
+		for j := i + 1; j < len(raw); j++ {
+			swap := false
+			if raw[i].tier > raw[j].tier {
+				swap = true
+			} else if raw[i].tier == raw[j].tier && raw[i].sr.proc.CPUPercent < raw[j].sr.proc.CPUPercent {
+				swap = true
+			}
+			if swap {
+				raw[i], raw[j] = raw[j], raw[i]
+			}
+		}
+	}
+
+	var results []searchResult
+	for _, m := range raw {
+		results = append(results, m.sr)
+	}
+
+	// Expand children if toggle is on.
+	if m.searchShowChildren {
+		// Build a lookup: (sessionIdx, windowIdx) → processes
+		type procListKey struct{ si, wi int }
+		procLists := make(map[procListKey][]collector.Process)
+		for _, ref := range refs {
+			procLists[procListKey{ref.sessionIdx, ref.windowIdx}] = ref.procs
+		}
+
+		// Build set of directly-matched PIDs to avoid duplicates during expansion.
+		directPIDs := make(map[int]bool)
+		for _, sr := range results {
+			if !sr.isChild {
+				directPIDs[sr.proc.PID] = true
+			}
+		}
+
+		var expanded []searchResult
+		for _, sr := range results {
+			expanded = append(expanded, sr)
+			if sr.isChild {
+				continue
+			}
+			key := procListKey{sr.sessionIdx, sr.windowIdx}
+			procs := procLists[key]
+			rootDepth := sr.proc.Depth
+			for ri := sr.procIdx + 1; ri < len(procs); ri++ {
+				cp := procs[ri]
+				if cp.PID == 0 || cp.Depth <= rootDepth {
+					break
+				}
+				if directPIDs[cp.PID] {
+					continue
+				}
+				expanded = append(expanded, searchResult{
+					sessionIdx: sr.sessionIdx,
+					windowIdx:  sr.windowIdx,
+					procIdx:    ri,
+					proc:       cp,
+					isChild:    true,
+				})
+			}
+		}
+		results = expanded
+	}
+
+	return results
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Search input handling
+
+func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case keyEsc:
+		m.inputMode = InputNone
+		m.searchQuery = ""
+		m.searchResults = nil
+		m.searchSelected = 0
+		m.selectedPIDs = make(map[int]struct{})
+		m.sidebarCache = make(map[int]string)
+		m.showingMultiSelect = false
+		if m.mode == ViewMain || m.mode == ViewOverview {
+			m.mode = m.prevMode
+		}
+		return m, nil
+
+	case keyEnter:
+		if len(m.searchResults) > 0 && m.searchSelected < len(m.searchResults) {
+			return m.commitSearch()
+		}
+		return m, nil
+
+	case "backspace":
+		if len(m.searchQuery) > 0 {
+			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+		}
+		m.searchResults = m.rebuildSearchResults()
+		if m.searchSelected >= len(m.searchResults) {
+			m.searchSelected = max0(len(m.searchResults) - 1)
+		}
+		return m, nil
+
+	case "down", "j":
+		if len(m.searchResults) > 0 {
+			m.searchSelected = (m.searchSelected + 1) % len(m.searchResults)
+		}
+		return m, nil
+
+	case "up", "k":
+		if len(m.searchResults) > 0 {
+			if m.searchSelected > 0 {
+				m.searchSelected--
+			} else {
+				m.searchSelected = len(m.searchResults) - 1
+			}
+		}
+		return m, nil
+
+	case "tab":
+		if len(m.searchResults) > 0 && m.searchSelected < len(m.searchResults) {
+			sr := m.searchResults[m.searchSelected]
+			pid := sr.proc.PID
+			if _, ok := m.selectedPIDs[pid]; ok {
+				delete(m.selectedPIDs, pid)
+				delete(m.sidebarCache, pid)
+				if len(m.selectedPIDs) == 0 {
+					m.showingMultiSelect = false
+				}
+				return m, nil
+			}
+			m.selectedPIDs[pid] = struct{}{}
+			m.showingMultiSelect = true
+			if !m.sidebarOpen {
+				m.sidebarOpen = true
+			}
+			return m, m.searchWitrCmd(pid)
+		}
+		return m, nil
+
+	case "ctrl+a":
+		for _, sr := range m.searchResults {
+			m.selectedPIDs[sr.proc.PID] = struct{}{}
+		}
+		if len(m.searchResults) > 0 {
+			m.showingMultiSelect = true
+			if !m.sidebarOpen {
+				m.sidebarOpen = true
+			}
+		}
+		return m, nil
+
+	case "ctrl+d":
+		m.selectedPIDs = make(map[int]struct{})
+		m.sidebarCache = make(map[int]string)
+		m.showingMultiSelect = false
+		return m, nil
+
+	case "ctrl+u":
+		// Invert: build set of all result PIDs, flip each.
+		pidSet := make(map[int]bool)
+		for _, sr := range m.searchResults {
+			_, sel := m.selectedPIDs[sr.proc.PID]
+			pidSet[sr.proc.PID] = sel
+		}
+		for pid, sel := range pidSet {
+			if sel {
+				delete(m.selectedPIDs, pid)
+			} else {
+				m.selectedPIDs[pid] = struct{}{}
+			}
+		}
+		if len(m.selectedPIDs) > 0 {
+			m.showingMultiSelect = true
+			if !m.sidebarOpen {
+				m.sidebarOpen = true
+			}
+		} else {
+			m.showingMultiSelect = false
+		}
+		return m, nil
+
+	case "ctrl+e":
+		if len(m.searchResults) > 0 && m.searchSelected < len(m.searchResults) {
+			sr := m.searchResults[m.searchSelected]
+			return m, m.toggleDescendants(sr)
+		}
+		return m, nil
+
+	case "ctrl+s":
+		m.searchAllSessions = !m.searchAllSessions
+		m.searchResults = m.rebuildSearchResults()
+		if m.searchSelected >= len(m.searchResults) {
+			m.searchSelected = max0(len(m.searchResults) - 1)
+		}
+		return m, nil
+
+	case "ctrl+t":
+		m.searchShowChildren = !m.searchShowChildren
+		m.searchResults = m.rebuildSearchResults()
+		if m.searchSelected >= len(m.searchResults) {
+			m.searchSelected = max0(len(m.searchResults) - 1)
+		}
+		return m, nil
+
+	case "ctrl+h":
+		m.inputMode = InputNone
+		m.searchQuery = ""
+		m.searchResults = nil
+		m.searchSelected = 0
+		m.selectedPIDs = make(map[int]struct{})
+		m.sidebarCache = make(map[int]string)
+		m.showingMultiSelect = false
+		m.mode = ViewHelp
+		return m, nil
+
+	case "ctrl+p":
+		m.sidebarOpen = !m.sidebarOpen
+		return m, nil
+
+	default:
+		// Append printable character to query.
+		s := msg.String()
+		if len(s) == 1 && s[0] >= 32 && s[0] <= 126 {
+			m.searchQuery += s
+			m.searchResults = m.rebuildSearchResults()
+			if m.searchSelected >= len(m.searchResults) {
+				m.searchSelected = max0(len(m.searchResults) - 1)
+			}
+		}
+		return m, nil
+	}
+}
+
+func (m Model) commitSearch() (tea.Model, tea.Cmd) {
+	if m.searchSelected >= len(m.searchResults) {
+		return m, nil
+	}
+	sr := m.searchResults[m.searchSelected]
+
+	// Switch to the correct session if needed.
+	if sr.sessionIdx >= 0 && sr.sessionIdx < len(m.sessions) {
+		m.session = m.sessions[sr.sessionIdx].Name
+		m.coll.SetSession(m.session)
+	}
+
+	// Update windows from the target session.
+	for _, s := range m.sessions {
+		if s.Name == m.session {
+			m = m.applyWindowData(s.Windows)
+			break
+		}
+	}
+
+	// Navigate to the correct window and process.
+	m.currentTab = sr.windowIdx
+	m.selectedProc = sr.procIdx
+	m.browsingProcs = true
+
+	// Exit search mode.
+	m.inputMode = InputNone
+	m.searchQuery = ""
+	m.searchResults = nil
+	m.searchSelected = 0
+
+	// Open detail view.
+	m.mode = ViewDetail
+	m.detailReady = false
+	return m, m.runWitrCmd(sr.proc)
+}
+
+func (m Model) searchWitrCmd(pid int) tea.Cmd {
+	return func() tea.Msg {
+		if pid <= 0 {
+			// Fire for all selected PIDs.
+			return nil
+		}
+		out, err := exec.Command("witr", "-t", "--pid", fmt.Sprintf("%d", pid)).CombinedOutput()
+		if err != nil {
+			return sidebarMsg{pid: pid, content: fmt.Sprintf("(witr error: %v)", err)}
+		}
+		return sidebarMsg{pid: pid, content: string(out)}
+	}
+}
+
+// toggleDescendants toggles selection of the search result's process
+// plus all its descendants.
+func (m Model) toggleDescendants(sr searchResult) tea.Cmd {
+	// Gather PIDs to toggle: the process itself + descendants.
+	procs := m.getProcessList(sr)
+	if procs == nil {
+		return nil
+	}
+	rootDepth := sr.proc.Depth
+	pids := []int{sr.proc.PID}
+	for ri := sr.procIdx + 1; ri < len(procs); ri++ {
+		cp := procs[ri]
+		if cp.PID == 0 || cp.Depth <= rootDepth {
+			break
+		}
+		pids = append(pids, cp.PID)
+	}
+
+	// Check if they're all currently selected.
+	allSel := true
+	for _, pid := range pids {
+		if _, ok := m.selectedPIDs[pid]; !ok {
+			allSel = false
+			break
+		}
+	}
+
+	var cmds []tea.Cmd
+	for _, pid := range pids {
+		if allSel {
+			delete(m.selectedPIDs, pid)
+			delete(m.sidebarCache, pid)
+		} else {
+			m.selectedPIDs[pid] = struct{}{}
+			cmds = append(cmds, m.searchWitrCmd(pid))
+		}
+	}
+	if len(m.selectedPIDs) > 0 {
+		m.showingMultiSelect = true
+		if !m.sidebarOpen {
+			m.sidebarOpen = true
+		}
+	} else {
+		m.showingMultiSelect = false
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m Model) getProcessList(sr searchResult) []collector.Process {
+	if sr.sessionIdx >= 0 && sr.sessionIdx < len(m.sessions) {
+		sd := m.sessions[sr.sessionIdx]
+		if sr.windowIdx < len(sd.Windows) {
+			return sd.Windows[sr.windowIdx].Processes
+		}
+		return nil
+	}
+	if sr.windowIdx < len(m.windows) {
+		return m.windows[sr.windowIdx].Processes
+	}
+	return nil
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Key handling
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -367,12 +809,109 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.inputMode == InputSignal {
 		return m.handleSignalInput(msg)
 	}
+	// Search input mode has its own handler.
+	if m.inputMode == InputSearch {
+		return m.handleSearchInput(msg)
+	}
 
 	switch {
 	case msg.String() == "ctrl+c", msg.String() == "q", msg.String() == "Q":
 		return m, tea.Quit
 
+	case msg.String() == "/":
+		if m.mode == ViewMain || m.mode == ViewOverview {
+			m.inputMode = InputSearch
+			m.searchQuery = ""
+			m.searchResults = nil
+			m.searchSelected = 0
+			if m.mode == ViewOverview {
+				m.searchAllSessions = true
+			} else {
+				m.searchAllSessions = false
+			}
+			m.prevMode = m.mode
+		}
+
+	case msg.String() == "ctrl+a":
+		if m.mode == ViewMain && m.currentTab < len(m.windows) {
+			procs := m.windows[m.currentTab].Processes
+			for _, p := range procs {
+				if p.PID != 0 {
+					m.selectedPIDs[p.PID] = struct{}{}
+				}
+			}
+		}
+
+	case msg.String() == "ctrl+d":
+		m.selectedPIDs = make(map[int]struct{})
+		m.sidebarCache = make(map[int]string)
+		m.showingMultiSelect = false
+
+	case msg.String() == "ctrl+u":
+		if m.mode == ViewMain && m.currentTab < len(m.windows) {
+			procs := m.windows[m.currentTab].Processes
+			for _, p := range procs {
+				if p.PID == 0 {
+					continue
+				}
+				if _, ok := m.selectedPIDs[p.PID]; ok {
+					delete(m.selectedPIDs, p.PID)
+				} else {
+					m.selectedPIDs[p.PID] = struct{}{}
+				}
+			}
+			if len(m.selectedPIDs) > 0 {
+				m.showingMultiSelect = true
+			} else {
+				m.showingMultiSelect = false
+			}
+		}
+
+	case msg.String() == "ctrl+e":
+		if m.mode == ViewMain && m.currentTab < len(m.windows) {
+			procs := m.windows[m.currentTab].Processes
+			if m.selectedProc < len(procs) {
+				p := procs[m.selectedProc]
+				if p.PID == 0 {
+					break
+				}
+				// Build descendant list.
+				descPIDs := []int{p.PID}
+				rootDepth := p.Depth
+				for ri := m.selectedProc + 1; ri < len(procs); ri++ {
+					cp := procs[ri]
+					if cp.PID == 0 || cp.Depth <= rootDepth {
+						break
+					}
+					descPIDs = append(descPIDs, cp.PID)
+				}
+				// Check if all already selected.
+				allSel := true
+				for _, pid := range descPIDs {
+					if _, ok := m.selectedPIDs[pid]; !ok {
+						allSel = false
+						break
+					}
+				}
+				for _, pid := range descPIDs {
+					if allSel {
+						delete(m.selectedPIDs, pid)
+					} else {
+						m.selectedPIDs[pid] = struct{}{}
+					}
+				}
+			}
+		}
+
 	case msg.String() == "?":
+		if m.mode == ViewHelp {
+			m.mode = m.prevMode
+		} else {
+			m.prevMode = m.mode
+			m.mode = ViewHelp
+		}
+
+	case msg.String() == "ctrl+h":
 		if m.mode == ViewHelp {
 			m.mode = m.prevMode
 		} else {
@@ -389,6 +928,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case msg.String() == "tab":
+		if m.mode == ViewMain && m.currentTab < len(m.windows) {
+			procs := m.windows[m.currentTab].Processes
+			if m.selectedProc < len(procs) {
+				pid := procs[m.selectedProc].PID
+				if pid == 0 {
+					break
+				}
+				if _, ok := m.selectedPIDs[pid]; ok {
+					delete(m.selectedPIDs, pid)
+					delete(m.sidebarCache, pid)
+					if len(m.selectedPIDs) == 0 {
+						m.showingMultiSelect = false
+					}
+				} else {
+					m.selectedPIDs[pid] = struct{}{}
+					m.showingMultiSelect = true
+				}
+			}
+		}
+
+	case msg.String() == "ctrl+p":
 		m.sidebarOpen = !m.sidebarOpen
 
 	case msg.String() == " ":
@@ -398,6 +958,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case msg.String() == keyEsc:
+		m.selectedPIDs = make(map[int]struct{})
+		m.sidebarCache = make(map[int]string)
+		m.showingMultiSelect = false
 		switch m.mode {
 		case ViewHelp:
 			m.mode = m.prevMode
@@ -720,6 +1283,8 @@ var (
 	StyleStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)
 	// StyleErr is the red bold style for error messages.
 	StyleErr = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
+	// StyleSearchMatch is the yellow bold style for matched text in search results.
+	StyleSearchMatch = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700")).Bold(true)
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -896,18 +1461,37 @@ func (m Model) renderFooter() string {
 		pid := m.selectedPID()
 		return StyleStatus.Render(fmt.Sprintf("Send signal to PID %d: [ %s ]", pid, m.inputBuffer))
 	}
+	if m.inputMode == InputSearch {
+		childrenLabel := "show-children"
+		if m.searchShowChildren {
+			childrenLabel = "hide-children"
+		}
+		scopeLabel := "all"
+		if !m.searchAllSessions {
+			scopeLabel = "this-session"
+		}
+		shortcuts := []string{
+			"j/k:nav", "Ent:view", "ctrl+t:" + childrenLabel, "ctrl+s:" + scopeLabel,
+			"tab:select", "ctrl+a:all", "ctrl+d:none", "ctrl+u:inv", "ctrl+e:chld",
+			"ctrl+h:help", "esc:cancel", "q:quit",
+		}
+		joined := strings.Join(shortcuts, "  │  ")
+		return StyleFooter.Render(center(joined, m.width))
+	}
 	if m.statusMsg != "" && time.Now().Before(m.statusExpiry) {
 		return StyleStatus.Render(m.statusMsg)
 	}
 
 	shortcuts := []string{
-		"h/l:win", "j/k:nav", "Ent:view", "tab:side", "space:freeze", "o:all", "x:kill", "s:sig", "?:help", "q:quit",
+		"h/l:win", "j/k:nav", "Ent:view", "ctrl+p:side", "tab:select",
+		"ctrl+a:all", "ctrl+d:none", "ctrl+u:inv", "ctrl+e:tree",
+		"space:freeze", "o:all", "x:kill", "s:sig", "?:help", "ctrl+h:help", "q:quit",
 	}
 	joined := strings.Join(shortcuts, "  │  ")
 	return StyleFooter.Render(center(joined, m.width))
 }
 
-// renderStatsLine returns a beautiful full-width stats line (1 line).
+// renderStatsLine returns the system stats line.
 func (m Model) renderStatsLine() string {
 	var cpuTotal float64
 	var memTotal int64
@@ -924,6 +1508,32 @@ func (m Model) renderStatsLine() string {
 		stats = stats + "   │   " + lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaf00")).Bold(true).Render("❄ FREEZE")
 	}
 	return center(StyleValue.Render(stats), m.width)
+}
+
+// renderSearchBar returns the search bar line (replaces tabs/stats in search mode).
+func (m Model) renderSearchBar() string {
+	scope := m.session
+	if m.searchAllSessions {
+		scope = "all sessions"
+	}
+	query := m.searchQuery
+	if query == "" {
+		query = "█"
+	} else {
+		query += "█"
+	}
+	bar := fmt.Sprintf("Search: [%s]  │  %s", query, scope)
+	return center(StyleStatus.Render(bar), m.width)
+}
+
+// renderSearchInfoLine returns the search information line (items count + scope).
+func (m Model) renderSearchInfoLine() string {
+	scope := m.session
+	if m.searchAllSessions {
+		scope = "all sessions"
+	}
+	count := len(m.searchResults)
+	return center(StyleLabel.Render(fmt.Sprintf("%d items in %s", count, scope)), m.width)
 }
 
 // renderProcessList renders the process table for the current window, returning
@@ -967,6 +1577,10 @@ func (m Model) renderProcessRow(proc collector.Process, idx int, all []collector
 	}
 
 	prefix := treePrefix(proc, idx, all)
+	selMarker := ""
+	if _, ok := m.selectedPIDs[proc.PID]; ok {
+		selMarker = "● "
+	}
 	memMB := proc.MemRSS / 1024 / 1024
 	baseLeft := fmt.Sprintf("%8d %5.1f%% %7dMB(%4.1f%%) ", proc.PID, proc.CPUPercent, memMB, proc.MemPercent)
 
@@ -992,7 +1606,7 @@ func (m Model) renderProcessRow(proc collector.Process, idx int, all []collector
 	styledStatus := statusStyle.Render(statusStr)
 
 	uncoloredBase := baseLeft + statusStr + " "
-	maxCmdLen := m.width - len(uncoloredBase) - len(prefix) - 2
+	maxCmdLen := m.width - len(uncoloredBase) - len(prefix) - len(selMarker) - 2
 	if maxCmdLen < 4 {
 		maxCmdLen = 4
 	}
@@ -1033,7 +1647,8 @@ func (m Model) renderProcessRow(proc collector.Process, idx int, all []collector
 		cmdStyle = StyleValue
 	}
 
-	row := fmt.Sprintf("%s%s %s%s",
+	row := fmt.Sprintf("%s%s%s %s%s",
+		selMarker,
 		baseLeft,
 		styledStatus,
 		StyleTree.Render(prefix),
@@ -1129,9 +1744,66 @@ func clamp(v, lo, hi int) int {
 	return v
 }
 
+// matchField returns the match tier (0=exact, 1=prefix, 2=substring, -1=no match)
+// for a lowercased query against a field value.
+func matchField(q, field string) int {
+	lower := strings.ToLower(field)
+	switch {
+	case lower == q:
+		return 0
+	case strings.HasPrefix(lower, q):
+		return 1
+	case strings.Contains(lower, q):
+		return 2
+	}
+	return -1
+}
+
+// cleanupDeadPIDSelections removes any selected PID that is no longer
+// present in the current process data.
+func (m Model) cleanupDeadPIDSelections() Model {
+	if len(m.selectedPIDs) == 0 {
+		return m
+	}
+	// Collect all currently live PIDs.
+	live := make(map[int]bool)
+	for _, w := range m.windows {
+		for _, p := range w.Processes {
+			if p.PID != 0 {
+				live[p.PID] = true
+			}
+		}
+	}
+	for _, sd := range m.sessions {
+		for _, w := range sd.Windows {
+			for _, p := range w.Processes {
+				if p.PID != 0 {
+					live[p.PID] = true
+				}
+			}
+		}
+	}
+	for pid := range m.selectedPIDs {
+		if !live[pid] {
+			delete(m.selectedPIDs, pid)
+			delete(m.sidebarCache, pid)
+		}
+	}
+	if len(m.selectedPIDs) == 0 {
+		m.showingMultiSelect = false
+	}
+	return m
+}
+
 // ── Sidebar Helpers ──────────────────────────────────────────────────
 
 func (m Model) getSelectedProcess() *collector.Process {
+	if m.inputMode == InputSearch && len(m.searchResults) > 0 {
+		if m.searchSelected < len(m.searchResults) {
+			return &m.searchResults[m.searchSelected].proc
+		}
+		return nil
+	}
 	if m.currentTab < len(m.windows) {
 		procs := m.windows[m.currentTab].Processes
 		if m.selectedProc < len(procs) {
@@ -1169,6 +1841,17 @@ func (m Model) triggerSidebar(force bool) (Model, tea.Cmd) {
 	if !m.sidebarOpen {
 		return m, nil
 	}
+
+	if m.showingMultiSelect {
+		var cmds []tea.Cmd
+		for pid := range m.selectedPIDs {
+			if _, ok := m.sidebarCache[pid]; !ok || force {
+				cmds = append(cmds, m.searchWitrCmd(pid))
+			}
+		}
+		return m, tea.Batch(cmds...)
+	}
+
 	p := m.getSelectedProcess()
 	if p == nil {
 		m.sidebarContent = ""
@@ -1206,40 +1889,104 @@ func (m Model) getSidebarWidth() int {
 func (m Model) renderSidebar(width, height int) string {
 	var lines []string
 
-	sidebarHeader := StyleHeader.Render(center("Process Diagnostics", width))
-	lines = append(lines, sidebarHeader, StyleSep.Render(strings.Repeat("─", width)))
-
-	contentLines := strings.Split(m.sidebarContent, "\n")
-	totalContentLines := len(contentLines)
-	availLines := height - 2 // header + separator
-
-	maxOffset := totalContentLines - availLines
-	if maxOffset < 0 {
-		maxOffset = 0
-	}
-	if m.sidebarScrollOffset > maxOffset {
-		m.sidebarScrollOffset = maxOffset
-	}
-	if m.sidebarScrollOffset < 0 {
-		m.sidebarScrollOffset = 0
-	}
-
-	if m.sidebarScrollOffset < len(contentLines) {
-		contentLines = contentLines[m.sidebarScrollOffset:]
-	} else {
-		contentLines = nil
-	}
-
-	for _, cl := range contentLines {
-		if len(lines) >= height {
-			break
-		}
-		wrapped := wrapANSI(cl, width)
-		for _, wl := range wrapped {
+	if m.showingMultiSelect && len(m.selectedPIDs) > 0 {
+		// Section 1: compact selected list.
+		header := StyleHeader.Render(center(fmt.Sprintf("Selected (%d)", len(m.selectedPIDs)), width))
+		lines = append(lines, header, StyleSep.Render(strings.Repeat("─", width)))
+		for pid := range m.selectedPIDs {
+			name := m.pidToName(pid)
+			line := fmt.Sprintf("● %s (%d)", name, pid)
 			if len(lines) >= height {
 				break
 			}
-			lines = append(lines, wl)
+			lines = append(lines, "  "+line)
+		}
+
+		if len(lines) < height {
+			lines = append(lines, "")
+		}
+
+		// Section 2: per-process witr -t views.
+		for pid := range m.selectedPIDs {
+			if len(lines) >= height {
+				break
+			}
+			name := m.pidToName(pid)
+			subHeader := StyleSep.Render(fmt.Sprintf("❯ %s (%d)", name, pid))
+			lines = append(lines, subHeader)
+
+			// Full cmdline.
+			cmdline := m.pidToCmdline(pid)
+			if cmdline != "" {
+				wrapped := wrapANSI(cmdline, width)
+				for _, wl := range wrapped {
+					if len(lines) >= height {
+						break
+					}
+					lines = append(lines, wl)
+				}
+			}
+
+			// witr -t output from cache.
+			content, ok := m.sidebarCache[pid]
+			if !ok {
+				lines = append(lines, StyleSep.Render("  (loading witr...)"))
+			} else {
+				contentLines := strings.Split(content, "\n")
+				for _, cl := range contentLines {
+					if len(lines) >= height {
+						break
+					}
+					wrapped := wrapANSI(cl, width)
+					for _, wl := range wrapped {
+						if len(lines) >= height {
+							break
+						}
+						lines = append(lines, "  "+wl)
+					}
+				}
+			}
+
+			if len(lines) < height {
+				lines = append(lines, "")
+			}
+		}
+	} else {
+		sidebarHeader := StyleHeader.Render(center("Process Diagnostics", width))
+		lines = append(lines, sidebarHeader, StyleSep.Render(strings.Repeat("─", width)))
+
+		contentLines := strings.Split(m.sidebarContent, "\n")
+		totalContentLines := len(contentLines)
+		availLines := height - 2
+
+		maxOffset := totalContentLines - availLines
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		if m.sidebarScrollOffset > maxOffset {
+			m.sidebarScrollOffset = maxOffset
+		}
+		if m.sidebarScrollOffset < 0 {
+			m.sidebarScrollOffset = 0
+		}
+
+		if m.sidebarScrollOffset < len(contentLines) {
+			contentLines = contentLines[m.sidebarScrollOffset:]
+		} else {
+			contentLines = nil
+		}
+
+		for _, cl := range contentLines {
+			if len(lines) >= height {
+				break
+			}
+			wrapped := wrapANSI(cl, width)
+			for _, wl := range wrapped {
+				if len(lines) >= height {
+					break
+				}
+				lines = append(lines, wl)
+			}
 		}
 	}
 
@@ -1248,6 +1995,48 @@ func (m Model) renderSidebar(width, height int) string {
 	}
 
 	return strings.Join(lines[:height], "\n")
+}
+
+// pidToName returns the short command name for a PID by scanning windows/sessions.
+func (m Model) pidToName(pid int) string {
+	for _, w := range m.windows {
+		for _, p := range w.Processes {
+			if p.PID == pid {
+				return p.Command
+			}
+		}
+	}
+	for _, sd := range m.sessions {
+		for _, w := range sd.Windows {
+			for _, p := range w.Processes {
+				if p.PID == pid {
+					return p.Command
+				}
+			}
+		}
+	}
+	return "?"
+}
+
+// pidToCmdline returns the full command line for a PID by scanning windows/sessions.
+func (m Model) pidToCmdline(pid int) string {
+	for _, w := range m.windows {
+		for _, p := range w.Processes {
+			if p.PID == pid {
+				return p.FullCmdline
+			}
+		}
+	}
+	for _, sd := range m.sessions {
+		for _, w := range sd.Windows {
+			for _, p := range w.Processes {
+				if p.PID == pid {
+					return p.FullCmdline
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // wrapANSI wraps an ANSI-styled string to fit within the given width,

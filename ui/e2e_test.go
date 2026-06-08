@@ -535,3 +535,618 @@ func TestView_helpMode(t *testing.T) {
 		t.Error("expected help content in view when in help mode")
 	}
 }
+
+// ── Search ─────────────────────────────────────────────────────
+
+func TestSearch_activate(t *testing.T) {
+	m := testModel()
+
+	// Press / to activate search.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	if m.inputMode != InputSearch {
+		t.Errorf("expected InputSearch, got %v", m.inputMode)
+	}
+	// Footer should show search keys.
+	view := m.View()
+	if !strings.Contains(view, "ctrl+t:show-children") {
+		t.Errorf("expected search footer with ctrl+t:show-children, got:\n%s", view)
+	}
+	if !strings.Contains(view, "esc:cancel") {
+		t.Errorf("expected search footer with esc:cancel, got:\n%s", view)
+	}
+}
+
+func TestSearch_placeholder(t *testing.T) {
+	m := testModel()
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "type to search") {
+		t.Errorf("expected placeholder text, got:\n%s", view)
+	}
+}
+
+func TestSearch_filterByCommand(t *testing.T) {
+	m := testModel()
+
+	// Activate search
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	// Type "nv"
+	for _, k := range "nv" {
+		result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m = result.(Model)
+	}
+
+	if m.searchQuery != "nv" {
+		t.Errorf("expected query 'nv', got %q", m.searchQuery)
+	}
+	if len(m.searchResults) != 1 {
+		t.Fatalf("expected 1 search result for 'nv', got %d", len(m.searchResults))
+	}
+	if m.searchResults[0].proc.PID != 1001 {
+		t.Errorf("expected PID 1001 (nvim), got PID %d", m.searchResults[0].proc.PID)
+	}
+
+	// Type more to narrow to no matches
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	m = result.(Model)
+
+	if len(m.searchResults) != 0 {
+		t.Errorf("expected 0 matches for 'nvX', got %d", len(m.searchResults))
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "no matches") {
+		t.Errorf("expected no-matches message, got:\n%s", view)
+	}
+}
+
+func TestSearch_navKeys(t *testing.T) {
+	m := testModel()
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	// Type "go" — matches "go build" (PID 1002 via Command) and "nvim" (PID 1001 via FullCmdline "main.go")
+	for _, k := range "go" {
+		result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m = result.(Model)
+	}
+
+	if len(m.searchResults) != 2 {
+		t.Fatalf("expected 2 results for 'go', got %d", len(m.searchResults))
+	}
+
+	// j: 0→1
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = result.(Model)
+	if m.searchSelected != 1 {
+		t.Errorf("expected searchSelected=1 after j, got %d", m.searchSelected)
+	}
+
+	// j: 1→0 (wrap)
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = result.(Model)
+	if m.searchSelected != 0 {
+		t.Errorf("expected searchSelected=0 after wrap, got %d", m.searchSelected)
+	}
+
+	// k: 0→1 (wrap)
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	m = result.(Model)
+	if m.searchSelected != 1 {
+		t.Errorf("expected searchSelected=1 after k, got %d", m.searchSelected)
+	}
+
+	// Type "nv" instead for 2+ results from Command
+	m2 := testModel()
+	result2, _ := m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m2 = result2.(Model)
+
+	for _, k := range "n" {
+		result2, _ = m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m2 = result2.(Model)
+	}
+
+	// "n" matches "nvim" (PID 1001) and "node " (PID 1003) — 2 results
+	if len(m2.searchResults) != 2 {
+		t.Fatalf("expected 2 results for 'n', got %d", len(m2.searchResults))
+	}
+
+	// j: 0→1
+	result2, _ = m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m2 = result2.(Model)
+	if m2.searchSelected != 1 {
+		t.Errorf("expected searchSelected=1 after j, got %d", m2.searchSelected)
+	}
+
+	// j: 1→0 (wrap)
+	result2, _ = m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m2 = result2.(Model)
+	if m2.searchSelected != 0 {
+		t.Errorf("expected searchSelected=0 after wrap, got %d", m2.searchSelected)
+	}
+
+	// k: 0→1 (wrap)
+	result2, _ = m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	m2 = result2.(Model)
+	if m2.searchSelected != 1 {
+		t.Errorf("expected searchSelected=1 after k, got %d", m2.searchSelected)
+	}
+}
+
+func TestSearch_escCancels(t *testing.T) {
+	m := testModel()
+
+	// Activate search and type something.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+	for _, k := range "nv" {
+		result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m = result.(Model)
+	}
+
+	// Select something.
+	m.selectedPIDs[1001] = struct{}{}
+	m.showingMultiSelect = true
+
+	// Press esc.
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("esc")})
+	m = result.(Model)
+
+	if m.inputMode != InputNone {
+		t.Errorf("expected InputNone after esc, got %v", m.inputMode)
+	}
+	if m.searchQuery != "" {
+		t.Errorf("expected searchQuery cleared, got %q", m.searchQuery)
+	}
+	if m.searchResults != nil {
+		t.Errorf("expected searchResults nil, got %v", m.searchResults)
+	}
+	if len(m.selectedPIDs) != 0 {
+		t.Errorf("expected selections cleared, got %d", len(m.selectedPIDs))
+	}
+	if m.showingMultiSelect {
+		t.Error("expected showingMultiSelect=false after esc")
+	}
+}
+
+func TestSearch_allSessionsToggle(t *testing.T) {
+	m := testModel()
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	if m.searchAllSessions {
+		t.Error("expected searchAllSessions=false initially for normal mode")
+	}
+
+	// Toggle with ctrl+s
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	m = result.(Model)
+	if !m.searchAllSessions {
+		t.Error("expected searchAllSessions=true after ctrl+s")
+	}
+}
+
+func TestSearch_childrenToggle(t *testing.T) {
+	m := testModel()
+
+	// Add a child process to test children mode.
+	m.windows[0].Processes = []collector.Process{
+		{PID: 1001, Command: "nvim", CPUPercent: 5.0, MemRSS: 50 * 1024 * 1024, Status: "running", Depth: 0, IsLastChild: false},
+		{PID: 1002, Command: "lsp", CPUPercent: 0.0, MemRSS: 10 * 1024 * 1024, Status: "sleeping", Depth: 1, IsLastChild: true},
+	}
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	for _, k := range "nv" {
+		result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m = result.(Model)
+	}
+
+	// Without children: 1 match (nvim)
+	if len(m.searchResults) != 1 {
+		t.Fatalf("expected 1 result without children, got %d", len(m.searchResults))
+	}
+
+	// Toggle children with ctrl+t
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	m = result.(Model)
+	if !m.searchShowChildren {
+		t.Error("expected searchShowChildren=true after ctrl+t")
+	}
+
+	// With children: 2 results (nvim + lsp)
+	if len(m.searchResults) != 2 {
+		t.Fatalf("expected 2 results with children, got %d", len(m.searchResults))
+	}
+	if !m.searchResults[1].isChild {
+		t.Error("expected second result to have isChild=true")
+	}
+}
+
+func TestSearch_tabSelect(t *testing.T) {
+	m := testModel()
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	// Type "go"
+	for _, k := range "go" {
+		result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m = result.(Model)
+	}
+
+	// Tab to select the result
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = result.(Model)
+
+	if _, ok := m.selectedPIDs[1002]; !ok {
+		t.Error("expected PID 1002 to be selected after tab")
+	}
+	if !m.showingMultiSelect {
+		t.Error("expected showingMultiSelect=true after tab select")
+	}
+
+	// Tab again to deselect
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = result.(Model)
+
+	if _, ok := m.selectedPIDs[1002]; ok {
+		t.Error("expected PID 1002 to be deselected after second tab")
+	}
+	if m.showingMultiSelect {
+		t.Error("expected showingMultiSelect=false after deselecting last")
+	}
+}
+
+func TestSearch_selectAllAndDeselect(t *testing.T) {
+	m := testModel()
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	for _, k := range "n" {
+		result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m = result.(Model)
+	}
+
+	// ctrl+a — select all
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m = result.(Model)
+
+	if len(m.selectedPIDs) != 2 {
+		t.Errorf("expected 2 selected PIDs, got %d", len(m.selectedPIDs))
+	}
+
+	// ctrl+d — deselect all
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	m = result.(Model)
+
+	if len(m.selectedPIDs) != 0 {
+		t.Errorf("expected 0 selected PIDs after ctrl+d, got %d", len(m.selectedPIDs))
+	}
+}
+
+func TestSearch_invertSelection(t *testing.T) {
+	m := testModel()
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	for _, k := range "n" {
+		result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m = result.(Model)
+	}
+
+	// Select PID 1001 with tab.
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = result.(Model)
+
+	if _, ok := m.selectedPIDs[1001]; !ok {
+		t.Error("expected PID 1001 selected before invert")
+	}
+	if _, ok := m.selectedPIDs[1003]; ok {
+		t.Error("expected PID 1003 not selected before invert")
+	}
+
+	// ctrl+u — invert selection (deselect 1001, select 1003)
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlU})
+	m = result.(Model)
+
+	if _, ok := m.selectedPIDs[1001]; ok {
+		t.Error("expected PID 1001 deselected after invert")
+	}
+	if _, ok := m.selectedPIDs[1003]; !ok {
+		t.Error("expected PID 1003 selected after invert")
+	}
+}
+
+func TestSearch_tIsSearchable(t *testing.T) {
+	m := testModel()
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	// Type "t" — should be appended to query, not toggle children
+	for _, k := range "t" {
+		result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m = result.(Model)
+	}
+
+	if m.searchQuery != "t" {
+		t.Errorf("expected query 't', got %q", m.searchQuery)
+	}
+	if m.searchShowChildren {
+		t.Error("expected searchShowChildren=false — t should not toggle children anymore")
+	}
+}
+
+func TestSearch_ctrlH_fromSearch(t *testing.T) {
+	m := testModel()
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	// ctrl+h should exit search and show help
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
+	m = result.(Model)
+
+	if m.mode != ViewHelp {
+		t.Errorf("expected ViewHelp after ctrl+h from search, got %v", m.mode)
+	}
+	if m.inputMode != InputNone {
+		t.Errorf("expected InputNone after ctrl+h, got %v", m.inputMode)
+	}
+	if len(m.selectedPIDs) != 0 {
+		t.Errorf("expected selections cleared after ctrl+h, got %d", len(m.selectedPIDs))
+	}
+}
+
+func TestSearch_ctrlH_fromNormal(t *testing.T) {
+	m := testModel()
+
+	// ctrl+h should show help in normal mode
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
+	m = result.(Model)
+
+	if m.mode != ViewHelp {
+		t.Errorf("expected ViewHelp after ctrl+h in normal mode, got %v", m.mode)
+	}
+
+	// esc should return to ViewMain
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("esc")})
+	m = result.(Model)
+
+	if m.mode != ViewMain {
+		t.Errorf("expected ViewMain after esc from help, got %v", m.mode)
+	}
+}
+
+func TestEsc_clearsSelectionsInNormalMode(t *testing.T) {
+	m := testModel()
+
+	// Select a PID in normal mode
+	m.selectedPIDs[1001] = struct{}{}
+	m.showingMultiSelect = true
+
+	// Press esc — should clear selections
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("esc")})
+	m = result.(Model)
+
+	if len(m.selectedPIDs) != 0 {
+		t.Errorf("expected selections cleared, got %d", len(m.selectedPIDs))
+	}
+	if m.showingMultiSelect {
+		t.Error("expected showingMultiSelect=false")
+	}
+}
+
+func TestEsc_clearsSelectionsInOverview(t *testing.T) {
+	m := testModel()
+
+	// Switch to overview
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	m = result.(Model)
+
+	// Select a PID
+	m.selectedPIDs[1001] = struct{}{}
+
+	// Press esc — should clear selections and exit overview
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("esc")})
+	m = result.(Model)
+
+	if len(m.selectedPIDs) != 0 {
+		t.Errorf("expected selections cleared, got %d", len(m.selectedPIDs))
+	}
+	if m.mode != ViewMain {
+		t.Errorf("expected ViewMain after esc from overview, got %v", m.mode)
+	}
+}
+
+func TestSearch_matchesFullCmdline(t *testing.T) {
+	m := testModel()
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	// "main.go" only appears in FullCmdline, not Command
+	for _, k := range "main.go" {
+		result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m = result.(Model)
+	}
+
+	if len(m.searchResults) != 1 {
+		t.Fatalf("expected 1 result for 'main.go' (matching FullCmdline), got %d", len(m.searchResults))
+	}
+	if m.searchResults[0].proc.PID != 1001 {
+		t.Errorf("expected PID 1001 (nvim), got PID %d", m.searchResults[0].proc.PID)
+	}
+
+	// "8080" only appears in FullCmdline of node server.js
+	m2 := testModel()
+	result2, _ := m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m2 = result2.(Model)
+	for _, k := range "8080" {
+		result2, _ = m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m2 = result2.(Model)
+	}
+
+	if len(m2.searchResults) != 1 {
+		t.Fatalf("expected 1 result for '8080', got %d", len(m2.searchResults))
+	}
+	if m2.searchResults[0].proc.PID != 1003 {
+		t.Errorf("expected PID 1003 (node server.js), got PID %d", m2.searchResults[0].proc.PID)
+	}
+}
+
+func TestSearch_treeViewConnectors(t *testing.T) {
+	m := testModel()
+
+	// Set up a parent/child hierarchy with depth=1
+	m.windows[0].Processes = []collector.Process{
+		{PID: 1001, Command: "nvim", Depth: 0, CPUPercent: 5.0, MemRSS: 50 * 1024 * 1024, Status: "running", IsLastChild: false},
+		{PID: 1002, Command: "lsp", Depth: 1, CPUPercent: 0.0, MemRSS: 10 * 1024 * 1024, Status: "sleeping", IsLastChild: true},
+	}
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	m = result.(Model)
+
+	// Search for "lsp" — depth=1 process
+	for _, k := range "lsp" {
+		result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{k}})
+		m = result.(Model)
+	}
+
+	if len(m.searchResults) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(m.searchResults))
+	}
+
+	view := m.View()
+	// Verify tree connector characters appear in search results view
+	if !strings.Contains(view, "└──") && !strings.Contains(view, "├──") {
+		t.Errorf("expected tree connectors in search result view, got:\n%s", view)
+	}
+}
+
+func TestMultiSelect_normalMode(t *testing.T) {
+	m := testModel()
+
+	// Tab in normal mode on the default process (index 0, PID 1001).
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = result.(Model)
+
+	if _, ok := m.selectedPIDs[1001]; !ok {
+		t.Error("expected PID 1001 selected after tab in normal mode")
+	}
+	if !m.showingMultiSelect {
+		t.Error("expected showingMultiSelect=true after tab in normal mode")
+	}
+
+	// Tab again deselects.
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = result.(Model)
+	if _, ok := m.selectedPIDs[1001]; ok {
+		t.Error("expected PID 1001 deselected after second tab")
+	}
+	if m.showingMultiSelect {
+		t.Error("expected showingMultiSelect=false after deselect")
+	}
+}
+
+func TestMultiSelect_selectAllInWindow(t *testing.T) {
+	m := testModel()
+
+	// ctrl+a in normal mode selects all processes in current window (3 procs).
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	m = result.(Model)
+
+	if len(m.selectedPIDs) != 3 {
+		t.Errorf("expected 3 selected PIDs in window, got %d", len(m.selectedPIDs))
+	}
+}
+
+func TestMultiSelect_selectChildrenInWindow(t *testing.T) {
+	m := testModel()
+
+	// Set up a parent/child hierarchy.
+	m.windows[0].Processes = []collector.Process{
+		{PID: 1001, Command: "nvim", Depth: 0, CPUPercent: 5.0, MemRSS: 50 * 1024 * 1024, Status: "running"},
+		{PID: 1002, Command: "lsp", Depth: 1, CPUPercent: 0.0, MemRSS: 10 * 1024 * 1024, Status: "sleeping"},
+		{PID: 1003, Command: "tsserver", Depth: 2, CPUPercent: 0.0, MemRSS: 5 * 1024 * 1024, Status: "sleeping"},
+		{PID: 2001, Command: "bash", Depth: 0, CPUPercent: 0.5, MemRSS: 10 * 1024 * 1024, Status: "sleeping"},
+	}
+
+	// Navigate to first process (index 0, PID 1001).
+	m.selectedProc = 0
+	m.browsingProcs = true
+
+	// ctrl+e — select nvim + descendants (PIDs 1001, 1002, 1003)
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m = result.(Model)
+
+	if len(m.selectedPIDs) != 3 {
+		t.Errorf("expected 3 PIDs selected (nvim + children), got %d", len(m.selectedPIDs))
+	}
+	if _, ok := m.selectedPIDs[1001]; !ok {
+		t.Error("expected PID 1001 (nvim) selected")
+	}
+	if _, ok := m.selectedPIDs[1002]; !ok {
+		t.Error("expected PID 1002 (lsp) selected")
+	}
+	if _, ok := m.selectedPIDs[1003]; !ok {
+		t.Error("expected PID 1003 (tsserver) selected")
+	}
+	if _, ok := m.selectedPIDs[2001]; ok {
+		t.Error("expected PID 2001 (bash) NOT selected — different subtree")
+	}
+
+	// ctrl+e again — toggle off
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	m = result.(Model)
+
+	if len(m.selectedPIDs) != 0 {
+		t.Errorf("expected 0 PIDs after deselect, got %d", len(m.selectedPIDs))
+	}
+}
+
+func TestMultiSelect_deadPIDCleanup(t *testing.T) {
+	m := testModel()
+
+	// Select PID 1001.
+	m.selectedPIDs[1001] = struct{}{}
+	m.showingMultiSelect = true
+
+	// Simulate a refresh where PID 1001 is gone.
+	sessions := []collector.SessionData{
+		{
+			Name: "test-session",
+			Windows: []collector.WindowData{
+				{
+					Name:  "editor",
+					Index: 0,
+					Processes: []collector.Process{
+						{PID: 2001, Command: "bash", CPUPercent: 0.5, MemRSS: 10 * 1024 * 1024, Status: "sleeping", Depth: 0},
+					},
+				},
+			},
+		},
+	}
+	result, _ := m.Update(sessionDataMsg{sessions})
+	m = result.(Model)
+
+	if _, ok := m.selectedPIDs[1001]; ok {
+		t.Error("expected PID 1001 to be removed from selection after refresh")
+	}
+	if m.showingMultiSelect {
+		t.Error("expected showingMultiSelect=false after all selections removed")
+	}
+}
