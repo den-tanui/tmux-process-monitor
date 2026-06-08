@@ -26,6 +26,12 @@ type Window struct {
 	Name  string
 }
 
+// PaneInfo describes one tmux pane within a window.
+type PaneInfo struct {
+	Index int
+	PID   int
+}
+
 // Client wraps tmux CLI commands. It is safe to use concurrently.
 type Client struct{}
 
@@ -94,6 +100,35 @@ func (c *Client) ListPanePIDs(session string, windowIndex int) ([]int, error) {
 		pids = append(pids, pid)
 	}
 	return pids, nil
+}
+
+// ListPanes returns index and shell PID for every pane in session:windowIndex.
+func (c *Client) ListPanes(session string, windowIndex int) ([]PaneInfo, error) {
+	target := fmt.Sprintf("%s:%d", session, windowIndex)
+	out, err := run("tmux", "list-panes", "-t", target, "-F", "#{pane_index}:#{pane_pid}")
+	if err != nil {
+		if isNoServerErr(err) {
+			return nil, ErrNotRunning
+		}
+		return nil, fmt.Errorf("list-panes(%s): %w", target, err)
+	}
+	var panes []PaneInfo
+	for _, line := range nonEmpty(strings.Split(out, "\n")) {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		idx, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+		pid, err := strconv.Atoi(parts[1])
+		if err != nil {
+			continue
+		}
+		panes = append(panes, PaneInfo{Index: idx, PID: pid})
+	}
+	return panes, nil
 }
 
 // CurrentSession returns the name of the session that owns the calling pane.

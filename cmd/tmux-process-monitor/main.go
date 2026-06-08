@@ -18,6 +18,7 @@ func main() {
 	var (
 		window      = flag.String("w", "", "Start on this window name")
 		windowIndex = flag.Int("i", -1, "Start on this window index")
+		paneIndex   = flag.Int("p", -1, "Start on this pane index")
 		refreshRate = flag.Float64("r", 2.0, "Refresh interval in seconds")
 		overview    = flag.Bool("overview", false, "Open in overview (all-sessions) mode")
 	)
@@ -74,7 +75,7 @@ func main() {
 	coll := collector.New(tmuxClient, session)
 
 	// Construct the model.
-	m := ui.New(coll, session, *window, *windowIndex, rate)
+	m := ui.New(coll, session, *window, *windowIndex, *paneIndex, rate)
 
 	// Start overview mode if requested.
 	if *overview {

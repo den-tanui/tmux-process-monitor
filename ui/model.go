@@ -91,6 +91,7 @@ type Model struct {
 	// ── Window filter ──────────────────────────────────────────────────
 	initialWindow      string // navigate to this window on first load (name fallback)
 	initialWindowIndex int    // navigate to this window on first load (index, -1 = unset)
+	initialPaneIndex   int    // navigate to first process in this pane (-1 = unset)
 
 	// ── Status flash ───────────────────────────────────────────────────
 	statusMsg    string
@@ -121,6 +122,7 @@ func New(
 	session string,
 	initialWindow string,
 	initialWindowIndex int,
+	initialPaneIndex int,
 	refreshRate time.Duration,
 ) Model {
 	vp := viewport.New(80, 24)
@@ -129,6 +131,7 @@ func New(
 		session:            session,
 		initialWindow:      initialWindow,
 		initialWindowIndex: initialWindowIndex,
+		initialPaneIndex:   initialPaneIndex,
 		refreshRate:        refreshRate,
 		width:              80,
 		height:             24,
@@ -329,6 +332,25 @@ func (m Model) applyWindowData(windows []collector.WindowData) Model {
 
 	m.windows = windows
 
+	// First load: auto-select first process after the target pane's separator.
+	if m.initialPaneIndex >= 0 && m.currentTab < len(m.windows) {
+		procs := m.windows[m.currentTab].Processes
+		targetCmd := fmt.Sprintf("── pane %d ──", m.initialPaneIndex)
+		found := false
+		for i, p := range procs {
+			if p.PID == 0 && p.Command == targetCmd {
+				found = true
+				continue
+			}
+			if found && p.PID != 0 {
+				m.selectedProc = i
+				m.browsingProcs = true
+				break
+			}
+		}
+		m.initialPaneIndex = -1
+	}
+
 	// Clamp selected process.
 	if m.currentTab < len(m.windows) {
 		procs := m.windows[m.currentTab].Processes
@@ -403,7 +425,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.browsingProcs = true
 			if m.currentTab < len(m.windows) {
 				procs := m.windows[m.currentTab].Processes
-				m.selectedProc = (m.selectedProc + 1) % max1(len(procs))
+				if len(procs) > 0 {
+					start := m.selectedProc
+					for {
+						m.selectedProc = (m.selectedProc + 1) % len(procs)
+						if procs[m.selectedProc].PID != 0 {
+							break
+						}
+						if m.selectedProc == start {
+							break
+						}
+					}
+				}
 			}
 		}
 
@@ -418,10 +451,21 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else if m.browsingProcs {
 			if m.currentTab < len(m.windows) {
 				procs := m.windows[m.currentTab].Processes
-				if m.selectedProc > 0 {
-					m.selectedProc--
-				} else {
-					m.selectedProc = max0(len(procs) - 1)
+				if len(procs) > 0 {
+					start := m.selectedProc
+					for {
+						if m.selectedProc > 0 {
+							m.selectedProc--
+						} else {
+							m.selectedProc = len(procs) - 1
+						}
+						if procs[m.selectedProc].PID != 0 {
+							break
+						}
+						if m.selectedProc == start {
+							break
+						}
+					}
 				}
 			}
 		}
@@ -493,14 +537,29 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) nextTab() {
 	if len(m.windows) > 0 {
 		m.currentTab = (m.currentTab + 1) % len(m.windows)
-		m.selectedProc = 0
+		m.skipSeparator()
 	}
 }
 
 func (m *Model) prevTab() {
 	if len(m.windows) > 0 {
 		m.currentTab = (m.currentTab - 1 + len(m.windows)) % len(m.windows)
-		m.selectedProc = 0
+		m.skipSeparator()
+	}
+}
+
+func (m *Model) skipSeparator() {
+	m.selectedProc = 0
+	if m.currentTab >= len(m.windows) {
+		return
+	}
+	procs := m.windows[m.currentTab].Processes
+	for i, p := range procs {
+		if p.PID == 0 {
+			continue
+		}
+		m.selectedProc = i
+		break
 	}
 }
 
@@ -903,14 +962,13 @@ func (m Model) renderProcessList(availLines int) []string {
 
 // renderProcessRow renders one process row.
 func (m Model) renderProcessRow(proc collector.Process, idx int, all []collector.Process) string {
+	if proc.PID == 0 {
+		return StyleSep.Render(proc.Command)
+	}
+
 	prefix := treePrefix(proc, idx, all)
 	memMB := proc.MemRSS / 1024 / 1024
-	var baseLeft string
-	if proc.PID == 0 {
-		baseLeft = fmt.Sprintf("%8s %5.1f%% %7dMB(%4.1f%%) ", "PLUGIN", proc.CPUPercent, memMB, proc.MemPercent)
-	} else {
-		baseLeft = fmt.Sprintf("%8d %5.1f%% %7dMB(%4.1f%%) ", proc.PID, proc.CPUPercent, memMB, proc.MemPercent)
-	}
+	baseLeft := fmt.Sprintf("%8d %5.1f%% %7dMB(%4.1f%%) ", proc.PID, proc.CPUPercent, memMB, proc.MemPercent)
 
 	var statusStyle lipgloss.Style
 	switch proc.Status {
