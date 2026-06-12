@@ -44,6 +44,8 @@ const (
 const (
 	keyEnter = "enter"
 	keyEsc   = "esc"
+	keyDown  = "down"
+	keyUp    = "up"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -117,6 +119,9 @@ type Model struct {
 	// ── Detail Viewport ────────────────────────────────────────────────
 	detailView  viewport.Model
 	detailReady bool
+
+	// ── Help scroll ────────────────────────────────────────────────────
+	helpScroll int
 
 	// ── Sidebar ────────────────────────────────────────────────────────
 	sidebarOpen         bool
@@ -272,6 +277,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
+		if m.mode == ViewHelp {
+			//nolint:staticcheck
+			if msg.Type == tea.MouseWheelUp {
+				if m.helpScroll > 0 {
+					m.helpScroll--
+				}
+			} else if msg.Type == tea.MouseWheelDown { //nolint:staticcheck
+				m.helpScroll++
+			}
+			return m, nil
+		}
 		if m.mode == ViewDetail {
 			var cmd tea.Cmd
 			m.detailView, cmd = m.detailView.Update(msg)
@@ -292,7 +308,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if m.mode == ViewHelp {
-			m.mode = m.prevMode
+			switch msg.String() {
+			case "j", keyDown:
+				m.helpScroll++
+			case "k", keyUp:
+				if m.helpScroll > 0 {
+					m.helpScroll--
+				}
+			default:
+				m.mode = m.prevMode
+			}
 			return m, nil
 		}
 		if m.mode == ViewDetail {
@@ -560,13 +585,13 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "down", "j":
+	case keyDown, "j":
 		if len(m.searchResults) > 0 {
 			m.searchSelected = (m.searchSelected + 1) % len(m.searchResults)
 		}
 		return m, nil
 
-	case "up", "k":
+	case keyUp, "k":
 		if len(m.searchResults) > 0 {
 			if m.searchSelected > 0 {
 				m.searchSelected--
@@ -671,6 +696,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sidebarCache = make(map[int]string)
 		m.showingMultiSelect = false
 		m.mode = ViewHelp
+		m.helpScroll = 0
 		return m, nil
 
 	case "ctrl+p":
@@ -922,6 +948,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.prevMode = m.mode
 			m.mode = ViewHelp
+			m.helpScroll = 0
 		}
 
 	case msg.String() == "ctrl+h":
@@ -930,6 +957,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.prevMode = m.mode
 			m.mode = ViewHelp
+			m.helpScroll = 0
 		}
 
 	case msg.String() == "o":
@@ -993,7 +1021,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.nextTab()
 
-	case msg.String() == "down", msg.String() == "j":
+	case msg.String() == keyDown, msg.String() == "j":
 		if m.mode == ViewOverview {
 			m.browsingSession = true
 			m.selectedSession = (m.selectedSession + 1) % max1(len(m.sessions))
@@ -1016,7 +1044,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case msg.String() == "up", msg.String() == "k":
+	case msg.String() == keyUp, msg.String() == "k":
 		if m.mode == ViewOverview {
 			m.browsingSession = true
 			if m.selectedSession > 0 {

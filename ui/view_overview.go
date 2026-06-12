@@ -90,7 +90,7 @@ func (m Model) viewOverview() string {
 	return strings.Join(lines, "\n")
 }
 
-// viewHelp renders the keyboard shortcut reference overlay as a beautiful centered popup.
+// viewHelp renders the keyboard shortcut reference overlay as a scrollable centered popup.
 func (m Model) viewHelp() string {
 	contentLines := []string{
 		center(StyleHeader.Render("tmux-process-monitor — Keyboard Reference"), 52),
@@ -133,12 +133,11 @@ func (m Model) viewHelp() string {
 		StyleLabel.Render("General"),
 		"  " + StyleValue.Render("q / Ctrl+C") + "     Quit",
 		"",
-		center(StyleFooter.Render("Press any key to return…"), 52),
+		center(StyleFooter.Render("Press any key to close (j/k to scroll)"), 52),
 	}
 
 	joined := strings.Join(contentLines, "\n")
 
-	// Create the popup box using lipgloss.
 	popupStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#87d7ff")).
@@ -149,8 +148,9 @@ func (m Model) viewHelp() string {
 	popupHeight := len(popupLines)
 	popupWidth := lipgloss.Width(popupLines[0])
 
-	// Center the popup inside the available height & width.
-	startY := (m.height - popupHeight) / 2
+	availableHeight := m.height
+
+	startY := (availableHeight - popupHeight) / 2
 	if startY < 0 {
 		startY = 0
 	}
@@ -160,19 +160,38 @@ func (m Model) viewHelp() string {
 		startX = 0
 	}
 
+	// Clamp scroll offset.
+	maxScroll := max0(popupHeight - availableHeight)
+	if m.helpScroll > maxScroll {
+		m.helpScroll = maxScroll
+	}
+
 	var sections []string
 	for i := 0; i < startY; i++ {
 		sections = append(sections, "")
 	}
 
+	// Slice popup lines based on scroll offset.
+	visibleLines := popupLines
+	if m.helpScroll > 0 {
+		if m.helpScroll < len(popupLines) {
+			visibleLines = popupLines[m.helpScroll:]
+		} else {
+			visibleLines = nil
+		}
+	}
+
 	indent := strings.Repeat(" ", startX)
-	for _, pl := range popupLines {
+	for _, pl := range visibleLines {
+		if len(sections) >= availableHeight {
+			break
+		}
 		sections = append(sections, indent+pl)
 	}
 
-	for len(sections) < m.height {
+	for len(sections) < availableHeight {
 		sections = append(sections, "")
 	}
 
-	return strings.Join(sections[:m.height], "\n")
+	return strings.Join(sections[:availableHeight], "\n")
 }
