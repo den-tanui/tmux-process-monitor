@@ -55,6 +55,44 @@ func TestWitrFailure_generic(t *testing.T) {
 	}
 }
 
+// ── case-insensitive matching ────────────────────────────────────
+
+func TestMatchField_tiers(t *testing.T) {
+	cases := []struct {
+		query string
+		field string
+		want  int
+	}{
+		{"alpha", "alpha", 0},
+		{"alpha", "ALPHA", 0},
+		{"alpha", "alphabet", 1},
+		{"alpha", "ALPHABET", 1},
+		{"alpha", "xalpha", 2},
+		{"alpha", "xALPHA", 2},
+		{"alpha", "beta", -1},
+		{"alpha", "al", -1},
+		{"", "anything", 0},
+	}
+	for _, tc := range cases {
+		if got := matchField(tc.query, tc.field); got != tc.want {
+			t.Errorf("matchField(%q, %q) = %d, want %d", tc.query, tc.field, got, tc.want)
+		}
+	}
+}
+
+func TestMatchField_multibyte(t *testing.T) {
+	// A multi-byte query must not be split in the middle.
+	if got := matchField("héllo", "héllo world"); got != 1 {
+		t.Errorf("expected a prefix match, got %d", got)
+	}
+	if got := matchField("héllo", "say héllo"); got != 2 {
+		t.Errorf("expected a substring match, got %d", got)
+	}
+	if got := matchField("héllo", "hello"); got != -1 {
+		t.Errorf("expected no match, got %d", got)
+	}
+}
+
 // ── signal status messages ───────────────────────────────────────
 
 func TestKillStatusMessage_success(t *testing.T) {

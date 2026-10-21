@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -144,6 +147,11 @@ type Model struct {
 	selectedPIDs       map[int]struct{}
 	showingMultiSelect bool
 	sidebarCache       map[int]string // PID → witr -t output (multi-select)
+
+	// ── PID index ─────────────────────────────────────────────────────
+	// pidIndex maps a PID to its process, rebuilt on every data refresh so
+	// the sidebar does not have to scan the whole process tree per lookup.
+	pidIndex map[int]collector.Process
 }
 
 // New constructs and returns an initialised Model.
@@ -169,6 +177,7 @@ func New(
 		sidebarOpen:        true,
 		selectedPIDs:       make(map[int]struct{}),
 		sidebarCache:       make(map[int]string),
+		pidIndex:           make(map[int]collector.Process),
 	}
 }
 
@@ -232,6 +241,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m = m.applyWindowData(activeWindows)
+
+		// Rebuild the PID lookup table for the sidebar.
+		m.rebuildPIDIndex()
 
 		// Auto-select first entry in overview when entering/viewing overview.
 		if m.mode == ViewOverview {
@@ -516,7 +528,7 @@ func (m Model) rebuildSearchResults() []searchResult {
 		tier int // 0=exact, 1=prefix, 2=substring
 	}
 
-	var raw []match
+	raw := make([]match, 0, 256)
 
 	// Determine scope: current windows or all sessions.
 	type winRef struct {
@@ -557,22 +569,16 @@ func (m Model) rebuildSearchResults() []searchResult {
 		}
 	}
 
-	// Sort: tier ascending, then CPU% descending.
-	for i := 0; i < len(raw); i++ {
-		for j := i + 1; j < len(raw); j++ {
-			swap := false
-			if raw[i].tier > raw[j].tier {
-				swap = true
-			} else if raw[i].tier == raw[j].tier && raw[i].sr.proc.CPUPercent < raw[j].sr.proc.CPUPercent {
-				swap = true
-			}
-			if swap {
-				raw[i], raw[j] = raw[j], raw[i]
-			}
+	// Sort: tier ascending, then CPU% descending. The sort is stable so
+	// that processes of the same tier keep their tree order.
+	sort.SliceStable(raw, func(i, j int) bool {
+		if raw[i].tier != raw[j].tier {
+			return raw[i].tier < raw[j].tier
 		}
-	}
+		return raw[i].sr.proc.CPUPercent > raw[j].sr.proc.CPUPercent
+	})
 
-	var results []searchResult
+	results := make([]searchResult, 0, len(raw))
 	for _, m := range raw {
 		results = append(results, m.sr)
 	}
@@ -594,7 +600,7 @@ func (m Model) rebuildSearchResults() []searchResult {
 			}
 		}
 
-		var expanded []searchResult
+		expanded := make([]searchResult, 0, len(results))
 		for _, sr := range results {
 			expanded = append(expanded, sr)
 			if sr.isChild {
@@ -1912,18 +1918,62 @@ func clamp(v, lo, hi int) int {
 }
 
 // matchField returns the match tier (0=exact, 1=prefix, 2=substring, -1=no match)
-// for a lowercased query against a field value.
+// for a case-insensitive query against a field value.
+//
+// It compares without lowercasing the field, which would copy every command
+// line on every keystroke.
 func matchField(q, field string) int {
-	lower := strings.ToLower(field)
 	switch {
-	case lower == q:
+	case q == "":
 		return 0
-	case strings.HasPrefix(lower, q):
+	case len(field) == len(q) && strings.EqualFold(field, q):
+		return 0
+	case hasPrefixFold(field, q):
 		return 1
-	case strings.Contains(lower, q):
+	case containsFold(field, q):
 		return 2
 	}
 	return -1
+}
+
+// hasPrefixFold reports whether s starts with prefix, ignoring case.
+//
+// The prefix is walked rune by rune so a multi-byte character is never
+// split in the middle.
+func hasPrefixFold(s, prefix string) bool {
+	if prefix == "" {
+		return true
+	}
+	if len(s) < len(prefix) {
+		return false
+	}
+	for _, r := range prefix {
+		if s == "" {
+			return false
+		}
+		rs, size := utf8.DecodeRuneInString(s)
+		if unicode.ToLower(rs) != unicode.ToLower(r) {
+			return false
+		}
+		s = s[size:]
+	}
+	return true
+}
+
+// containsFold reports whether substr occurs in s, ignoring case.
+func containsFold(s, substr string) bool {
+	if substr == "" {
+		return true
+	}
+	if len(substr) > len(s) {
+		return false
+	}
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if hasPrefixFold(s[i:], substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanupDeadPIDSelections removes any selected PID that is no longer
@@ -2171,46 +2221,43 @@ func (m Model) renderSidebar(width, height int) string {
 	return strings.Join(lines[:min(len(lines), height)], "\n")
 }
 
-// pidToName returns the short command name for a PID by scanning windows/sessions.
+// pidToName returns the short command name for a PID.
 func (m Model) pidToName(pid int) string {
-	for _, w := range m.windows {
-		for _, p := range w.Processes {
-			if p.PID == pid {
-				return p.Command
-			}
-		}
-	}
-	for _, sd := range m.sessions {
-		for _, w := range sd.Windows {
-			for _, p := range w.Processes {
-				if p.PID == pid {
-					return p.Command
-				}
-			}
-		}
+	if p, ok := m.pidIndex[pid]; ok {
+		return p.Command
 	}
 	return "?"
 }
 
-// pidToCmdline returns the full command line for a PID by scanning windows/sessions.
+// pidToCmdline returns the full command line for a PID.
 func (m Model) pidToCmdline(pid int) string {
-	for _, w := range m.windows {
-		for _, p := range w.Processes {
-			if p.PID == pid {
-				return p.FullCmdline
+	if p, ok := m.pidIndex[pid]; ok {
+		return p.FullCmdline
+	}
+	return ""
+}
+
+// rebuildPIDIndex rebuilds the PID → process lookup table. It covers the
+// current window as well as every window of every session, which is what the
+// multi-select sidebar needs.
+func (m *Model) rebuildPIDIndex() {
+	idx := make(map[int]collector.Process, len(m.pidIndex)+64)
+	add := func(procs []collector.Process) {
+		for _, p := range procs {
+			if p.PID != 0 {
+				idx[p.PID] = p
 			}
 		}
+	}
+	for _, w := range m.windows {
+		add(w.Processes)
 	}
 	for _, sd := range m.sessions {
 		for _, w := range sd.Windows {
-			for _, p := range w.Processes {
-				if p.PID == pid {
-					return p.FullCmdline
-				}
-			}
+			add(w.Processes)
 		}
 	}
-	return ""
+	m.pidIndex = idx
 }
 
 // wrapANSI wraps an ANSI-styled string to fit within the given width,

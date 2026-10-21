@@ -1268,6 +1268,33 @@ func TestAutoSelect_overview_preservesUserSelectionAcrossRefresh(t *testing.T) {
 
 // ── Panic regressions ───────────────────────────────────────────
 
+// TestSearch_ordering pins the search result ordering: exact matches first,
+// then prefixes, then substrings; within a tier the busiest process first.
+func TestSearch_ordering(t *testing.T) {
+	m := testModel()
+	m.windows[0].Processes = []collector.Process{
+		{PID: 1, Command: "alpha", Status: "sleeping", Depth: 0, CPUPercent: 1},
+		{PID: 2, Command: "alphabet", Status: "sleeping", Depth: 0, CPUPercent: 50},
+		{PID: 3, Command: "xalpha", Status: "sleeping", Depth: 0, CPUPercent: 5},
+		{PID: 4, Command: "alpha-two", Status: "sleeping", Depth: 0, CPUPercent: 90},
+	}
+	m.sessions[0].Windows = m.windows
+	m.inputMode = InputSearch
+	m.searchQuery = "alpha"
+
+	m.searchResults = m.rebuildSearchResults()
+
+	want := []int{1, 4, 2, 3}
+	if len(m.searchResults) != len(want) {
+		t.Fatalf("expected %d results, got %d", len(want), len(m.searchResults))
+	}
+	for i, pid := range want {
+		if m.searchResults[i].proc.PID != pid {
+			t.Errorf("result %d: expected PID %d, got %d", i, pid, m.searchResults[i].proc.PID)
+		}
+	}
+}
+
 // A terminal narrower than 40 columns used to make getSidebarWidth return a
 // negative width, and renderSidebar then called strings.Repeat with it.
 func TestNoPanic_narrowTerminal(_ *testing.T) {
