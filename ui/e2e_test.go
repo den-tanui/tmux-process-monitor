@@ -1326,6 +1326,46 @@ func TestNoPanic_searchWithNoWindows(_ *testing.T) {
 }
 
 // A terminal 2 rows tall gives renderSidebar a negative height.
+// ── Sidebar content sanitization (witr via `script -qec` emits CRLF) ─────────
+
+// TestSidebar_noControlChars ensures CR characters from pty-wrapped witr
+// output never reach the rendered frame: an embedded \r inside a line joined
+// with the process list sends the terminal cursor back to column 0 and the
+// padding spaces wipe the process row's left edge.
+func TestSidebar_noControlChars(t *testing.T) {
+	m := testModel()
+	m.sidebarOpen = true
+	m.sidebarContent = "witr 0.4\r\npid: 1234  state: S\r\nparent chain:\r\n  1 -> 100\r\n"
+
+	out := m.renderSidebar(40, 10)
+	for i, ln := range strings.Split(out, "\n") {
+		if strings.ContainsAny(ln, "\r\b") {
+			t.Errorf("sidebar line %d contains control chars: %q", i, ln)
+		}
+	}
+	if !strings.Contains(out, "pid: 1234") {
+		t.Error("expected sanitized content to still contain pid line")
+	}
+}
+
+// TestSidebarCache_noControlChars: multi-select path stores witr -t output in
+// sidebarCache; same CRLF corruption applies to the " "-prefixed render path.
+func TestSidebarCache_noControlChars(t *testing.T) {
+	m := testModel()
+	m.sidebarOpen = true
+	m.showingMultiSelect = true
+	m.selectedPIDs = map[int]struct{}{1001: {}}
+	m.sidebarCache = map[int]string{1001: "line one\r\nline two\r\n"}
+	m.rebuildPIDIndex()
+
+	out := m.renderSidebar(40, 12)
+	for i, ln := range strings.Split(out, "\n") {
+		if strings.ContainsAny(ln, "\r\b") {
+			t.Errorf("multi-select sidebar line %d contains control chars: %q", i, ln)
+		}
+	}
+}
+
 func TestNoPanic_renderSidebarNegativeHeight(_ *testing.T) {
 	m := testModel()
 	_ = m.renderSidebar(40, -1)

@@ -2260,9 +2260,30 @@ func (m *Model) rebuildPIDIndex() {
 	m.pidIndex = idx
 }
 
+// stripControl removes C0 control characters (CR, BS, BEL, …) that corrupt
+// terminal layout when content is embedded in the frame joined with the
+// process list: an embedded \r sends the cursor to column 0 and the padding
+// spaces then wipe the process row's left edge. witr output is produced under
+// `script -qec`, whose pty emits CRLF line endings. ANSI escape sequences are
+// preserved.
+func stripControl(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool {
+		return r < 0x20 && r != '\x1b' && r != '\n'
+	}) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\x1b' && r != '\n' {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // wrapANSI wraps an ANSI-styled string to fit within the given width,
 // preserving ANSI codes and adding a "↳ " wrap marker on continuation lines.
 func wrapANSI(s string, width int) []string {
+	s = stripControl(s)
 	if lipgloss.Width(s) <= width {
 		return []string{padded(s, width)}
 	}
