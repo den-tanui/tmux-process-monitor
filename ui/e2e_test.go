@@ -1471,6 +1471,330 @@ func TestFirstRealProcessIndex(t *testing.T) {
 	}
 }
 
+// ── Group 8: handleKey characterization (lock behaviour before refactor) ─────
+
+// isQuitCmd reports whether cmd is tea.Quit (a plain func value; compare
+// code pointers).
+func isQuitCmd(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	return reflect.ValueOf(cmd).Pointer() == reflect.ValueOf(tea.Quit).Pointer()
+}
+
+// TestHandleKey_everyBinding walks every key binding handled by handleKey and
+// asserts the resulting state. Written BEFORE the handleKey decomposition so
+// the refactor is provably behaviour-preserving.
+func TestHandleKey_everyBinding(t *testing.T) {
+	k := func(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
+
+	t.Run("quit_keys", func(t *testing.T) {
+		for _, key := range []string{"q", "Q"} {
+			m := testModel()
+			_, cmd := m.handleKey(k(key))
+			if !isQuitCmd(cmd) {
+				t.Errorf("%q: expected tea.Quit, got %v", key, cmd)
+			}
+		}
+		m := testModel()
+		_, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC})
+		if !isQuitCmd(cmd) {
+			t.Error("ctrl+c: expected tea.Quit")
+		}
+	})
+
+	t.Run("slash_enters_search", func(t *testing.T) {
+		m := testModel()
+		m.mode = ViewOverview
+		res, _ := m.handleKey(k("/"))
+		got := res.(Model)
+		if got.inputMode != InputSearch || got.searchAllSessions != true || got.prevMode != ViewOverview {
+			t.Errorf("/ in overview: inputMode=%v searchAll=%v prevMode=%v", got.inputMode, got.searchAllSessions, got.prevMode)
+		}
+		m = testModel()
+		res, _ = m.handleKey(k("/"))
+		got = res.(Model)
+		if got.inputMode != InputSearch || got.searchAllSessions != false {
+			t.Errorf("/ in main: inputMode=%v searchAll=%v", got.inputMode, got.searchAllSessions)
+		}
+	})
+
+	t.Run("ctrlA_selects_all", func(t *testing.T) {
+		m := testModel()
+		res, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlA})
+		got := res.(Model)
+		if len(got.selectedPIDs) != 3 || !got.showingMultiSelect {
+			t.Errorf("ctrl+a: selected=%d multi=%v", len(got.selectedPIDs), got.showingMultiSelect)
+		}
+	})
+
+	t.Run("ctrlD_clears", func(t *testing.T) {
+		m := testModel()
+		m.selectedPIDs[1001] = struct{}{}
+		m.showingMultiSelect = true
+		res, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlD})
+		got := res.(Model)
+		if len(got.selectedPIDs) != 0 || got.showingMultiSelect {
+			t.Errorf("ctrl+d: selected=%d multi=%v", len(got.selectedPIDs), got.showingMultiSelect)
+		}
+	})
+
+	t.Run("ctrlU_inverts", func(t *testing.T) {
+		m := testModel()
+		m.selectedPIDs[1001] = struct{}{}
+		res, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlU})
+		got := res.(Model)
+		if _, ok := got.selectedPIDs[1001]; ok {
+			t.Error("ctrl+u: 1001 should be deselected")
+		}
+		if len(got.selectedPIDs) != 2 {
+			t.Errorf("ctrl+u: expected 2 selected, got %d", len(got.selectedPIDs))
+		}
+	})
+
+	t.Run("ctrlE_toggles_children", func(t *testing.T) {
+		m := testModel()
+		m.browsingProcs = true
+		m.selectedProc = 1 // "go build"
+		res, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+		got := res.(Model)
+		if _, ok := got.selectedPIDs[1002]; !ok {
+			t.Error("ctrl+e: cursor pid not selected")
+		}
+		// second press deselects (all selected → remove)
+		res, _ = got.handleKey(tea.KeyMsg{Type: tea.KeyCtrlE})
+		got = res.(Model)
+		if len(got.selectedPIDs) != 0 {
+			t.Errorf("ctrl+e second press: expected empty, got %d", len(got.selectedPIDs))
+		}
+	})
+
+	t.Run("help_toggle_both_keys", func(t *testing.T) {
+		for _, msg := range []tea.KeyMsg{k("?"), {Type: tea.KeyCtrlH}} {
+			m := testModel()
+			res, _ := m.handleKey(msg)
+			got := res.(Model)
+			if got.mode != ViewHelp || got.prevMode != ViewMain {
+				t.Errorf("%s: mode=%v prev=%v", msg.String(), got.mode, got.prevMode)
+			}
+			res, _ = got.handleKey(msg)
+			got = res.(Model)
+			if got.mode != ViewMain {
+				t.Errorf("%s second press: mode=%v", msg.String(), got.mode)
+			}
+		}
+	})
+
+	t.Run("o_toggles_overview", func(t *testing.T) {
+		m := testModel()
+		res, cmd := m.handleKey(k("o"))
+		got := res.(Model)
+		if got.mode != ViewOverview || !got.browsingSession || cmd == nil {
+			t.Errorf("o: mode=%v browsing=%v cmd=%v", got.mode, got.browsingSession, cmd != nil)
+		}
+		res, _ = got.handleKey(k("o"))
+		got = res.(Model)
+		if got.mode != ViewMain {
+			t.Errorf("o second press: mode=%v", got.mode)
+		}
+	})
+
+	t.Run("tab_toggles_cursor_selection", func(t *testing.T) {
+		m := testModel()
+		m.browsingProcs = true
+		m.selectedProc = 0
+		res, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+		got := res.(Model)
+		if _, ok := got.selectedPIDs[1001]; !ok || !got.showingMultiSelect {
+			t.Error("tab: cursor pid not selected")
+		}
+		res, _ = got.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+		got = res.(Model)
+		if len(got.selectedPIDs) != 0 || got.showingMultiSelect {
+			t.Errorf("tab second press: selected=%d multi=%v", len(got.selectedPIDs), got.showingMultiSelect)
+		}
+	})
+
+	t.Run("ctrlP_toggles_sidebar", func(t *testing.T) {
+		m := testModel() // sidebarOpen starts true
+		res, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlP})
+		if res.(Model).sidebarOpen {
+			t.Error("ctrl+p: sidebar should close")
+		}
+	})
+
+	t.Run("space_toggles_freeze", func(t *testing.T) {
+		m := testModel()
+		res, cmd := m.handleKey(k(" "))
+		got := res.(Model)
+		if !got.frozen || cmd != nil {
+			t.Errorf("space: frozen=%v cmd=%v", got.frozen, cmd != nil)
+		}
+		res, cmd = got.handleKey(k(" "))
+		got = res.(Model)
+		if got.frozen || cmd == nil {
+			t.Errorf("space unfreeze: frozen=%v cmd=%v", got.frozen, cmd != nil)
+		}
+	})
+
+	t.Run("esc_clears_and_exits_modes", func(t *testing.T) {
+		m := testModel()
+		m.selectedPIDs[1001] = struct{}{}
+		m.showingMultiSelect = true
+		m.mode = ViewOverview
+		res, _ := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+		got := res.(Model)
+		if len(got.selectedPIDs) != 0 || got.showingMultiSelect || got.mode != ViewMain {
+			t.Errorf("esc: selected=%d multi=%v mode=%v", len(got.selectedPIDs), got.showingMultiSelect, got.mode)
+		}
+		m = testModel()
+		m.mode = ViewHelp
+		m.prevMode = ViewMain
+		res, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+		got = res.(Model)
+		if got.mode != ViewMain {
+			t.Errorf("esc from help: mode=%v", got.mode)
+		}
+	})
+
+	t.Run("arrow_and_hjkl_tab_nav", func(t *testing.T) {
+		for _, msg := range []tea.KeyMsg{
+			{Type: tea.KeyLeft}, k("h"), k("H"),
+			{Type: tea.KeyRight}, k("l"), k("L"),
+		} {
+			m := testModel() // 2 windows, currentTab=0
+			res, _ := m.handleKey(msg)
+			got := res.(Model)
+			want := 1 // prev: (0-1+2)%2=1 ; next: 1
+			if got.currentTab != want {
+				t.Errorf("%s: currentTab=%d want %d", msg.String(), got.currentTab, want)
+			}
+		}
+		// in overview tab nav is a no-op
+		m := testModel()
+		m.mode = ViewOverview
+		res, _ := m.handleKey(k("h"))
+		if res.(Model).currentTab != 0 {
+			t.Error("h in overview should not change tab")
+		}
+	})
+
+	t.Run("down_up_proc_nav", func(t *testing.T) {
+		m := testModel()
+		res, _ := m.handleKey(k("j"))
+		got := res.(Model)
+		if !got.browsingProcs || got.selectedProc != 1 {
+			t.Errorf("j: browsing=%v proc=%d", got.browsingProcs, got.selectedProc)
+		}
+		res, _ = got.handleKey(k("k"))
+		got = res.(Model)
+		if got.selectedProc != 0 {
+			t.Errorf("k: proc=%d", got.selectedProc)
+		}
+		// arrow variants
+		m = testModel()
+		res, _ = m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+		if res.(Model).selectedProc != 1 {
+			t.Error("keyDown: proc should be 1")
+		}
+	})
+
+	t.Run("down_up_session_nav_in_overview", func(t *testing.T) {
+		m := testModel()
+		m.mode = ViewOverview
+		m.selectedSession = 0
+		res, _ := m.handleKey(k("j"))
+		got := res.(Model)
+		if got.selectedSession != 0 { // only 1 session: (0+1)%1=0
+			t.Errorf("j overview: session=%d", got.selectedSession)
+		}
+		res, _ = got.handleKey(k("k"))
+		if res.(Model).selectedSession != 0 {
+			t.Error("k overview: session should wrap to 0")
+		}
+	})
+
+	t.Run("enter_opens_detail_from_main", func(t *testing.T) {
+		m := testModel()
+		m.browsingProcs = true
+		m.selectedProc = 0
+		res, cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+		got := res.(Model)
+		if got.mode != ViewDetail || cmd == nil {
+			t.Errorf("enter: mode=%v cmd=%v", got.mode, cmd != nil)
+		}
+	})
+
+	t.Run("x_s_send_signal_actions", func(t *testing.T) {
+		m := testModel()
+		m.browsingProcs = true
+		_, cmd := m.handleKey(k("x"))
+		if cmd == nil {
+			t.Error("x with browsing: expected sigTerm cmd")
+		}
+		m = testModel()
+		m.browsingProcs = false
+		_, cmd = m.handleKey(k("x"))
+		if cmd != nil {
+			t.Error("x without browsing: expected nil cmd")
+		}
+		m = testModel()
+		m.browsingProcs = true
+		res, _ := m.handleKey(k("s"))
+		got := res.(Model)
+		if got.inputMode != InputSignal || got.inputBuffer != "" {
+			t.Errorf("s: inputMode=%v buffer=%q", got.inputMode, got.inputBuffer)
+		}
+	})
+
+	t.Run("y_Y_copy", func(t *testing.T) {
+		m := testModel()
+		m.browsingProcs = true
+		_, cmd := m.handleKey(k("y"))
+		if cmd == nil {
+			t.Error("y: expected copy cmd")
+		}
+		_, cmd = m.handleKey(k("Y"))
+		if cmd == nil {
+			t.Error("Y: expected copy cmd")
+		}
+	})
+
+	t.Run("alt_arrow_hscroll", func(t *testing.T) {
+		m := testModel()
+		m.hScrollOff = 20
+		for _, msg := range []tea.KeyMsg{k("alt+left"), k("alt+h")} {
+			m2 := testModel()
+			m2.hScrollOff = 20
+			res, _ := m2.handleKey(msg)
+			if res.(Model).hScrollOff != 10 {
+				t.Errorf("%s: hScroll=%d want 10", msg.String(), res.(Model).hScrollOff)
+			}
+		}
+		m.hScrollOff = 0
+		res, _ := m.handleKey(k("alt+left"))
+		if res.(Model).hScrollOff != 0 {
+			t.Error("alt+left at 0: should not go negative")
+		}
+		res, _ = m.handleKey(k("alt+right"))
+		if res.(Model).hScrollOff != 10 {
+			t.Errorf("alt+right: hScroll=%d want 10", res.(Model).hScrollOff)
+		}
+	})
+
+	t.Run("unknown_key_is_noop", func(t *testing.T) {
+		m := testModel()
+		res, cmd := m.handleKey(k("z"))
+		if cmd != nil {
+			t.Error("unknown key: expected nil cmd")
+		}
+		got := res.(Model)
+		if got.mode != ViewMain || got.selectedProc != 0 || len(got.selectedPIDs) != 0 {
+			t.Error("unknown key: model changed")
+		}
+	})
+}
+
 func TestNoPanic_renderSidebarNegativeHeight(_ *testing.T) {
 	m := testModel()
 	_ = m.renderSidebar(40, -1)

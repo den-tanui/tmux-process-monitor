@@ -943,7 +943,30 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case msg.String() == "ctrl+c", msg.String() == "q", msg.String() == "Q":
 		return m, tea.Quit
+	}
 
+	// Concern-based dispatch. The four groups own disjoint key sets, so
+	// evaluation order cannot change behaviour.
+	if nm, cmd, ok := m.handleViewToggleKey(msg); ok {
+		return nm, cmd
+	}
+	if nm, cmd, ok := m.handleMultiSelectKey(msg); ok {
+		return nm, cmd
+	}
+	if nm, cmd, ok := m.handleNavigationKey(msg); ok {
+		return nm, cmd
+	}
+	if nm, cmd, ok := m.handleProcessActionKey(msg); ok {
+		return nm, cmd
+	}
+	return m, nil
+}
+
+// handleViewToggleKey handles keys that switch views or toggle global UI
+// state: search entry, help overlay, overview, sidebar, freeze and esc.
+// It reports whether the key was one of its bindings.
+func (m Model) handleViewToggleKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch {
 	case msg.String() == "/":
 		if m.mode == ViewMain || m.mode == ViewOverview {
 			m.inputMode = InputSearch
@@ -957,7 +980,65 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.prevMode = m.mode
 		}
+		return m, nil, true
 
+	case msg.String() == keyHelp, msg.String() == keyCtrlH:
+		if m.mode == ViewHelp {
+			m.mode = m.prevMode
+		} else {
+			m.prevMode = m.mode
+			m.mode = ViewHelp
+			m.helpScroll = 0
+		}
+		return m, nil, true
+
+	case msg.String() == "o":
+		if m.mode == ViewOverview {
+			m.mode = ViewMain
+			m.ensureProcessSelection()
+			return m, nil, true
+		}
+		m.mode = ViewOverview
+		m.browsingSession = true
+		if len(m.sessions) > 0 {
+			if m.selectedSession < 0 || m.selectedSession >= len(m.sessions) {
+				m.selectedSession = 0
+			}
+		} else {
+			m.selectedSession = 0
+		}
+		return m, collectSessionsCmd(m.coll), true
+
+	case msg.String() == keyCtrlP:
+		m.sidebarOpen = !m.sidebarOpen
+		return m, nil, true
+
+	case msg.String() == " ":
+		m.frozen = !m.frozen
+		if !m.frozen {
+			return m, collectSessionsCmd(m.coll), true
+		}
+		return m, nil, true
+
+	case msg.String() == keyEsc:
+		m.selectedPIDs = make(map[int]struct{})
+		m.sidebarCache = make(map[int]string)
+		m.showingMultiSelect = false
+		switch m.mode {
+		case ViewHelp:
+			m.mode = m.prevMode
+		case ViewOverview:
+			m.mode = ViewMain
+		}
+		return m, nil, true
+	}
+	return m, nil, false
+}
+
+// handleMultiSelectKey handles the multi-select bindings (ctrl+a/d/u/e and
+// tab), most of them gated on the main view.
+func (m Model) handleMultiSelectKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch {
 	case msg.String() == keyCtrlA:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
 			procs := m.windows[m.currentTab].Processes
@@ -970,11 +1051,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.showingMultiSelect = true
 			}
 		}
+		return m, nil, true
 
 	case msg.String() == keyCtrlD:
 		m.selectedPIDs = make(map[int]struct{})
 		m.sidebarCache = make(map[int]string)
 		m.showingMultiSelect = false
+		return m, nil, true
 
 	case msg.String() == keyCtrlU:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
@@ -996,6 +1079,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.showingMultiSelect = false
 			}
 		}
+		return m, nil, true
 
 	case msg.String() == keyCtrlE:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
@@ -1003,7 +1087,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.selectedProc < len(procs) {
 				p := procs[m.selectedProc]
 				if p.PID == 0 {
-					break
+					return m, nil, true
 				}
 				// Build descendant list.
 				descPIDs := []int{p.PID}
@@ -1038,32 +1122,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-
-	case msg.String() == keyHelp, msg.String() == keyCtrlH:
-		if m.mode == ViewHelp {
-			m.mode = m.prevMode
-		} else {
-			m.prevMode = m.mode
-			m.mode = ViewHelp
-			m.helpScroll = 0
-		}
-
-	case msg.String() == "o":
-		if m.mode == ViewOverview {
-			m.mode = ViewMain
-			m.ensureProcessSelection()
-		} else {
-			m.mode = ViewOverview
-			m.browsingSession = true
-			if len(m.sessions) > 0 {
-				if m.selectedSession < 0 || m.selectedSession >= len(m.sessions) {
-					m.selectedSession = 0
-				}
-			} else {
-				m.selectedSession = 0
-			}
-			return m, collectSessionsCmd(m.coll)
-		}
+		return m, nil, true
 
 	case msg.String() == keyTab:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
@@ -1071,7 +1130,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.selectedProc < len(procs) {
 				pid := procs[m.selectedProc].PID
 				if pid == 0 {
-					break
+					return m, nil, true
 				}
 				if _, ok := m.selectedPIDs[pid]; ok {
 					delete(m.selectedPIDs, pid)
@@ -1085,38 +1144,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		return m, nil, true
+	}
+	return m, nil, false
+}
 
-	case msg.String() == keyCtrlP:
-		m.sidebarOpen = !m.sidebarOpen
-
-	case msg.String() == " ":
-		m.frozen = !m.frozen
-		if !m.frozen {
-			return m, collectSessionsCmd(m.coll)
-		}
-
-	case msg.String() == keyEsc:
-		m.selectedPIDs = make(map[int]struct{})
-		m.sidebarCache = make(map[int]string)
-		m.showingMultiSelect = false
-		switch m.mode {
-		case ViewHelp:
-			m.mode = m.prevMode
-		case ViewOverview:
-			m.mode = ViewMain
-		}
-
+// handleNavigationKey handles tab navigation, process/session cursor movement
+// and enter (open detail / select session). Overview-specific behaviour stays
+// behind the same mode checks the original switch used.
+func (m Model) handleNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch {
 	case msg.String() == "left", msg.String() == "h", msg.String() == "H":
-		if m.mode == ViewOverview {
-			break
+		if m.mode != ViewOverview {
+			m.prevTab()
 		}
-		m.prevTab()
+		return m, nil, true
 
 	case msg.String() == "right", msg.String() == "l", msg.String() == "L":
-		if m.mode == ViewOverview {
-			break
+		if m.mode != ViewOverview {
+			m.nextTab()
 		}
-		m.nextTab()
+		return m, nil, true
 
 	case msg.String() == keyDown, msg.String() == "j":
 		if m.mode == ViewOverview {
@@ -1140,6 +1188,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		return m, nil, true
 
 	case msg.String() == keyUp, msg.String() == "k":
 		if m.mode == ViewOverview {
@@ -1170,6 +1219,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		return m, nil, true
 
 	case msg.String() == keyEnter:
 		switch m.mode {
@@ -1180,7 +1230,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.mode = ViewMain
 				m.currentTab = 0
 				m.browsingSession = false
-				return m, collectSessionsCmd(m.coll)
+				return m, collectSessionsCmd(m.coll), true
 			}
 		case ViewMain:
 			if m.currentTab < len(m.windows) {
@@ -1193,46 +1243,58 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					m.mode = ViewDetail
 					m.detailReady = false
-					return m, m.runWitrCmd(p)
+					return m, m.runWitrCmd(p), true
 				}
 			}
 		}
+		return m, nil, true
+	}
+	return m, nil, false
+}
 
+// handleProcessActionKey handles signals, clipboard copy and horizontal scroll.
+func (m Model) handleProcessActionKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch {
 	case msg.String() == "x", msg.String() == "X":
 		if m.browsingProcs {
-			return m, m.sigTermCmd()
+			return m, m.sigTermCmd(), true
 		}
+		return m, nil, true
 
 	case msg.String() == "s":
 		if m.browsingProcs {
 			m.inputMode = InputSignal
 			m.inputBuffer = ""
 		}
+		return m, nil, true
 
 	case msg.String() == "y":
 		if m.browsingProcs {
 			if cmd := m.selectedCommand(); cmd != "" {
-				return m, copyToClipboard(cmd)
+				return m, copyToClipboard(cmd), true
 			}
 		}
+		return m, nil, true
 
 	case msg.String() == "Y":
 		if m.browsingProcs {
 			if pid := m.selectedPID(); pid > 0 {
-				return m, copyToClipboard(fmt.Sprintf("%d", pid))
+				return m, copyToClipboard(fmt.Sprintf("%d", pid)), true
 			}
 		}
+		return m, nil, true
 
 	case msg.String() == "alt+left", msg.String() == "alt+h":
 		if m.hScrollOff > 0 {
 			m.hScrollOff -= 10
 		}
+		return m, nil, true
 
 	case msg.String() == "alt+right", msg.String() == "alt+l":
 		m.hScrollOff += 10
+		return m, nil, true
 	}
-
-	return m, nil
+	return m, nil, false
 }
 
 func (m *Model) nextTab() {
