@@ -2,9 +2,11 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1317,27 +1319,55 @@ func (m Model) handleSignalInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // ──────────────────────────────────────────────────────────────────────────────
 // Commands (async side effects)
 
+// witrFailure renders the message shown when a witr invocation fails.
+//
+// witr runs under `script`, so a missing witr binary surfaces as a shell
+// exit status of 127, not as "executable file not found". A missing `script`
+// binary is a different failure again and is reported separately.
+func witrFailure(err error, out []byte, p collector.Process) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 127 {
+		return fmt.Sprintf(
+			"witr is not installed. Showing basic process information.\n"+
+				"(Install 'witr' and add it to your PATH for advanced diagnostics.)\n\n"+
+				"Command: %s\n"+
+				"Full Cmdline: %s\n\n"+
+				"PID: %d\n"+
+				"PPID: %d\n\n"+
+				"CPU Usage: %.1f%%\n"+
+				"Memory RSS: %d MB (%.1f%%)\n",
+			p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
+		)
+	}
+	var execErr *exec.Error
+	if errors.As(err, &execErr) && errors.Is(err, exec.ErrNotFound) {
+		return fmt.Sprintf(
+			"'script' is not installed, so witr cannot be run.\n"+
+				"(Install 'util-linux' for script, or install witr and add it to your PATH.)\n\n"+
+				"Command: %s\n"+
+				"Full Cmdline: %s\n\n"+
+				"PID: %d\n",
+			p.Command, p.FullCmdline, p.PID,
+		)
+	}
+	return fmt.Sprintf("witr error: %v\n%s", err, string(out))
+}
+
+// killStatusMessage renders the status line for a signal attempt.
+func killStatusMessage(err error, signal string, pid int) string {
+	if err != nil {
+		return fmt.Sprintf("Failed to send %s to PID %d: %v", signal, pid, err)
+	}
+	return fmt.Sprintf("Sent %s to PID %d", signal, pid)
+}
+
 func (m Model) runWitrCmd(p collector.Process) tea.Cmd {
 	return func() tea.Msg {
 		cmd := exec.Command("script", "-qec", fmt.Sprintf("witr --pid %d --verbose", p.PID), "/dev/null")
 		cmd.Env = append(os.Environ(), "CLICOLOR_FORCE=1", "FORCE_COLOR=1", "COLORTERM=truecolor", "TERM=xterm-256color")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			if strings.Contains(err.Error(), "executable file not found") {
-				fallback := fmt.Sprintf(
-					"witr is not installed. Showing basic process information.\n"+
-						"(Install 'witr' and add it to your PATH for advanced diagnostics.)\n\n"+
-						"Command: %s\n"+
-						"Full Cmdline: %s\n\n"+
-						"PID: %d\n"+
-						"PPID: %d\n\n"+
-						"CPU Usage: %.1f%%\n"+
-						"Memory RSS: %d MB (%.1f%%)\n"+
-						p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
-				)
-				return witrMsg(fallback)
-			}
-			return witrMsg(fmt.Sprintf("witr error: %v\n%s", err, string(out)))
+			return witrMsg(witrFailure(err, out, p))
 		}
 		return witrMsg(string(out))
 	}
@@ -1349,8 +1379,8 @@ func (m Model) sigTermCmd() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		exec.Command("kill", "-15", fmt.Sprintf("%d", pid)).Run() //nolint:errcheck
-		return statusMsg(fmt.Sprintf("Sent SIGTERM to PID %d", pid))
+		err := exec.Command("kill", "-15", strconv.Itoa(pid)).Run()
+		return statusMsg(killStatusMessage(err, "SIGTERM", pid))
 	}
 }
 
@@ -1360,8 +1390,8 @@ func (m Model) sendSignalCmd(sig int) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		exec.Command("kill", fmt.Sprintf("-%d", sig), fmt.Sprintf("%d", pid)).Run() //nolint:errcheck
-		return statusMsg(fmt.Sprintf("Sent signal %d to PID %d", sig, pid))
+		err := exec.Command("kill", "-"+strconv.Itoa(sig), strconv.Itoa(pid)).Run()
+		return statusMsg(killStatusMessage(err, "signal "+strconv.Itoa(sig), pid))
 	}
 }
 
@@ -1613,6 +1643,9 @@ func (m Model) renderFooter() string {
 	if m.statusMsg != "" && time.Now().Before(m.statusExpiry) {
 		return StyleStatus.Render(m.statusMsg)
 	}
+	if m.lastErr != nil {
+		return StyleErr.Render(center(fmt.Sprintf("error: %v", m.lastErr), m.width))
+	}
 
 	shortcuts := []string{
 		"h/l:win", "j/k:nav", "space:freeze", "/:search", "ctrl+h:help",
@@ -1747,19 +1780,25 @@ func (m Model) renderProcessRow(proc collector.Process, idx int, all []collector
 	if isSelected {
 		// Horizontal scroll for the selected row.
 		if len(cmd) > maxCmdLen {
+			origLen := len(cmd)
 			start := m.hScrollOff
-			if start > len(cmd)-maxCmdLen {
-				start = len(cmd) - maxCmdLen
+			if start > origLen-maxCmdLen {
+				start = origLen - maxCmdLen
+			}
+			if start < 0 {
+				start = 0
 			}
 			end := start + maxCmdLen
-			if end > len(cmd) {
-				end = len(cmd)
+			if end > origLen {
+				end = origLen
 			}
 			cmd = cmd[start:end]
 			if start > 0 {
 				cmd = "«" + cmd[1:]
 			}
-			if start+maxCmdLen < len(cmd)+start {
+			if end < origLen && len(cmd) > 0 {
+				// The marker replaces the last visible character so the
+				// row keeps the same width.
 				cmd = cmd[:len(cmd)-1] + "»"
 			}
 		}
@@ -1949,21 +1988,7 @@ func (m Model) runWitrSidebarCmd(p collector.Process) tea.Cmd {
 		cmd.Env = append(os.Environ(), "CLICOLOR_FORCE=1", "FORCE_COLOR=1", "COLORTERM=truecolor", "TERM=xterm-256color")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			if strings.Contains(err.Error(), "executable file not found") {
-				fallback := fmt.Sprintf(
-					"witr is not installed.\n"+
-						"(Install 'witr' for advanced diagnostics.)\n\n"+
-						"Command: %s\n"+
-						"Full Cmdline: %s\n\n"+
-						"PID: %d\n"+
-						"PPID: %d\n\n"+
-						"CPU Usage: %.1f%%\n"+
-						"Memory RSS: %d MB (%.1f%%)\n"+
-						p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
-				)
-				return sidebarMsg{pid: p.PID, content: fallback}
-			}
-			return sidebarMsg{pid: p.PID, content: fmt.Sprintf("witr error: %v\n%s", err, string(out))}
+			return sidebarMsg{pid: p.PID, content: witrFailure(err, out, p)}
 		}
 		return sidebarMsg{pid: p.PID, content: string(out)}
 	}

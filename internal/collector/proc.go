@@ -192,6 +192,11 @@ func cpuPercent(prev, curr cpuSample) float64 {
 	if elapsed < 0.05 {
 		return 0
 	}
+	if curr.totalTicks < prev.totalTicks {
+		// The process exited or the PID was recycled: the baseline is stale
+		// and the unsigned subtraction would wrap around.
+		return 0
+	}
 	tickDiff := float64(curr.totalTicks - prev.totalTicks)
 	return (tickDiff / float64(clocksPerSec) / elapsed) * 100.0
 }

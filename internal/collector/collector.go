@@ -41,13 +41,20 @@ func (c *Collector) SetSession(session string) {
 	c.mu.Unlock()
 }
 
+// sessionName returns the active session name under the lock.
+func (c *Collector) sessionName() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.session
+}
+
 // WarmUp establishes CPU baselines for all pane processes asynchronously.
 // Call once after construction; first Collect() will return 0% CPU until
 // the warmup completes (~150ms later).
 func (c *Collector) WarmUp() {
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		windows, err := c.tmux.ListWindows(c.session)
+		windows, err := c.tmux.ListWindows(c.sessionName())
 		if err != nil {
 			return
 		}
@@ -63,7 +70,7 @@ func (c *Collector) WarmUp() {
 // Collect returns the latest window data for the configured session.
 // It is safe to call from the bubbletea update goroutine.
 func (c *Collector) Collect() ([]WindowData, error) {
-	windows, err := c.tmux.ListWindows(c.session)
+	windows, err := c.tmux.ListWindows(c.sessionName())
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +119,7 @@ func (c *Collector) collectSession(name string) SessionData {
 }
 
 func (c *Collector) collectWindow(w itx.Window) WindowData {
-	return c.collectWindowForSession(c.session, w)
+	return c.collectWindowForSession(c.sessionName(), w)
 }
 
 func (c *Collector) collectWindowForSession(session string, w itx.Window) WindowData {
@@ -229,7 +236,7 @@ func (c *Collector) MemPercent(rss int64) float64 {
 // Pane PID cache
 
 func (c *Collector) cachedPanePIDs(windowIndex int) []int {
-	panes := c.cachedPanesFor(c.session, windowIndex)
+	panes := c.cachedPanesFor(c.sessionName(), windowIndex)
 	pids := make([]int, len(panes))
 	for i, p := range panes {
 		pids[i] = p.PID
