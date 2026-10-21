@@ -3,6 +3,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -760,7 +761,9 @@ func (m Model) searchWitrCmd(pid int) tea.Cmd {
 			// Fire for all selected PIDs.
 			return nil
 		}
-		out, err := exec.Command("witr", "-t", "--pid", fmt.Sprintf("%d", pid)).CombinedOutput()
+		cmd := exec.Command("script", "-qec", fmt.Sprintf("witr -t --pid %d", pid), "/dev/null")
+		cmd.Env = append(os.Environ(), "CLICOLOR_FORCE=1", "FORCE_COLOR=1", "COLORTERM=truecolor", "TERM=xterm-256color")
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return sidebarMsg{pid: pid, content: fmt.Sprintf("(witr error: %v)", err)}
 		}
@@ -1230,7 +1233,9 @@ func (m Model) handleSignalInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) runWitrCmd(p collector.Process) tea.Cmd {
 	return func() tea.Msg {
-		out, err := exec.Command("witr", "--pid", fmt.Sprintf("%d", p.PID), "--verbose").CombinedOutput()
+		cmd := exec.Command("script", "-qec", fmt.Sprintf("witr --pid %d --verbose", p.PID), "/dev/null")
+		cmd.Env = append(os.Environ(), "CLICOLOR_FORCE=1", "FORCE_COLOR=1", "COLORTERM=truecolor", "TERM=xterm-256color")
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			if strings.Contains(err.Error(), "executable file not found") {
 				fallback := fmt.Sprintf(
@@ -1853,7 +1858,9 @@ func (m Model) getSelectedProcess() *collector.Process {
 
 func (m Model) runWitrSidebarCmd(p collector.Process) tea.Cmd {
 	return func() tea.Msg {
-		out, err := exec.Command("witr", "--pid", fmt.Sprintf("%d", p.PID), "--verbose").CombinedOutput()
+		cmd := exec.Command("script", "-qec", fmt.Sprintf("witr --pid %d --verbose", p.PID), "/dev/null")
+		cmd.Env = append(os.Environ(), "CLICOLOR_FORCE=1", "FORCE_COLOR=1", "COLORTERM=truecolor", "TERM=xterm-256color")
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			if strings.Contains(err.Error(), "executable file not found") {
 				fallback := fmt.Sprintf(

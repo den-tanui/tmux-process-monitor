@@ -8,6 +8,11 @@ linters:
     - unused
     - revive
     - goconst
+  settings:
+    goconst:
+      # Test fixtures intentionally repeat literal strings; extracting them
+      # into constants hurts readability more than it helps.
+      ignore-tests: true
 formatters:
   enable:
     - gofmt
