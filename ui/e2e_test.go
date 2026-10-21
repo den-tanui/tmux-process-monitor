@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1417,6 +1418,56 @@ func TestSidebarScrollOffset_resetOnPIDChange(t *testing.T) {
 	m2, _ := m.triggerSidebar(false)
 	if m2.sidebarScrollOffset != 0 {
 		t.Errorf("PID change did not reset scroll offset: got %d, want 0", m2.sidebarScrollOffset)
+	}
+}
+
+// ── Group 7: style/dedup helpers ─────────────────────────────────────────────
+
+// TestStatusStyle_matchesDocumentedColors locks the status→style mapping
+// extracted from the duplicated switches in renderProcessRow and
+// renderSearchResultRow.
+func TestStatusStyle_matchesDocumentedColors(t *testing.T) {
+	cases := []struct {
+		status string
+		want   lipgloss.Style
+	}{
+		{"running", lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)},
+		{"sleeping", lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87"))},
+		{"idle", lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87"))},
+		{"stopped", lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaf00"))},
+		{"tracing stop", lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaf00"))},
+		{"zombie", lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)},
+		{"dead", lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)},
+		{"disk sleep", lipgloss.NewStyle().Foreground(lipgloss.Color("#af87ff"))},
+		{"unknown-state", lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87"))},
+	}
+	for _, tc := range cases {
+		if got := statusStyle(tc.status); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("statusStyle(%q) = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}
+
+// TestFirstRealProcessIndex: the first non-separator (PID != 0) index, or -1.
+func TestFirstRealProcessIndex(t *testing.T) {
+	sep := collector.Process{PID: 0, Command: "── pane 0 ──"}
+	a := collector.Process{PID: 101, Command: "a"}
+	b := collector.Process{PID: 102, Command: "b"}
+	cases := []struct {
+		name  string
+		procs []collector.Process
+		want  int
+	}{
+		{"empty", nil, -1},
+		{"all separators", []collector.Process{sep, sep}, -1},
+		{"leading separators", []collector.Process{sep, sep, a, b}, 2},
+		{"no separators", []collector.Process{a, b}, 0},
+		{"separator in middle", []collector.Process{a, sep, b}, 0},
+	}
+	for _, tc := range cases {
+		if got := firstRealProcessIndex(tc.procs); got != tc.want {
+			t.Errorf("%s: firstRealProcessIndex = %d, want %d", tc.name, got, tc.want)
+		}
 	}
 }
 

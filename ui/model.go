@@ -48,10 +48,29 @@ const (
 
 // String constants for key matching.
 const (
-	keyEnter = "enter"
-	keyEsc   = "esc"
-	keyDown  = "down"
-	keyUp    = "up"
+	keyEnter     = "enter"
+	keyEsc       = "esc"
+	keyDown      = "down"
+	keyUp        = "up"
+	keyTab       = "tab"
+	keyBackspace = "backspace"
+	keyHelp      = "?"
+	keyCtrlA     = "ctrl+a"
+	keyCtrlD     = "ctrl+d"
+	keyCtrlE     = "ctrl+e"
+	keyCtrlH     = "ctrl+h"
+	keyCtrlP     = "ctrl+p"
+	keyCtrlS     = "ctrl+s"
+	keyCtrlT     = "ctrl+t"
+	keyCtrlU     = "ctrl+u"
+)
+
+// Colour constants shared by the style definitions below.
+const (
+	colorGreen  = "#00ff87"
+	colorAmber  = "#ffaf00"
+	colorRed    = "#ff5f5f"
+	colorPurple = "#af87ff"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -438,15 +457,12 @@ func (m Model) applyWindowData(windows []collector.WindowData) Model {
 	if m.initialPaneIndex >= 0 && m.currentTab < len(m.windows) {
 		procs := m.windows[m.currentTab].Processes
 		targetCmd := fmt.Sprintf("── pane %d ──", m.initialPaneIndex)
-		found := false
 		for i, p := range procs {
 			if p.PID == 0 && p.Command == targetCmd {
-				found = true
-				continue
-			}
-			if found && p.PID != 0 {
-				m.selectedProc = i
-				m.browsingProcs = true
+				if j := firstRealProcessIndex(procs[i+1:]); j >= 0 {
+					m.selectedProc = i + 1 + j
+					m.browsingProcs = true
+				}
 				break
 			}
 		}
@@ -480,12 +496,10 @@ func (m *Model) ensureProcessSelection() {
 	}
 
 	if !m.browsingProcs {
-		for i, p := range procs {
-			if p.PID != 0 {
-				m.selectedProc = i
-				m.browsingProcs = true
-				return
-			}
+		if i := firstRealProcessIndex(procs); i >= 0 {
+			m.selectedProc = i
+			m.browsingProcs = true
+			return
 		}
 		m.browsingProcs = false
 		return
@@ -656,7 +670,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "backspace":
+	case keyBackspace:
 		if len(m.searchQuery) > 0 {
 			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
 		}
@@ -682,7 +696,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "tab":
+	case keyTab:
 		if len(m.searchResults) > 0 && m.searchSelected < len(m.searchResults) {
 			sr := m.searchResults[m.searchSelected]
 			pid := sr.proc.PID
@@ -703,7 +717,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "ctrl+a":
+	case keyCtrlA:
 		for _, sr := range m.searchResults {
 			m.selectedPIDs[sr.proc.PID] = struct{}{}
 		}
@@ -715,13 +729,13 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "ctrl+d":
+	case keyCtrlD:
 		m.selectedPIDs = make(map[int]struct{})
 		m.sidebarCache = make(map[int]string)
 		m.showingMultiSelect = false
 		return m, nil
 
-	case "ctrl+u":
+	case keyCtrlU:
 		// Invert: build set of all result PIDs, flip each.
 		pidSet := make(map[int]bool)
 		for _, sr := range m.searchResults {
@@ -745,14 +759,14 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "ctrl+e":
+	case keyCtrlE:
 		if len(m.searchResults) > 0 && m.searchSelected < len(m.searchResults) {
 			sr := m.searchResults[m.searchSelected]
 			return m, m.toggleDescendants(sr)
 		}
 		return m, nil
 
-	case "ctrl+s":
+	case keyCtrlS:
 		m.searchAllSessions = !m.searchAllSessions
 		m.searchResults = m.rebuildSearchResults()
 		if m.searchSelected >= len(m.searchResults) {
@@ -760,7 +774,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "ctrl+t":
+	case keyCtrlT:
 		m.searchShowChildren = !m.searchShowChildren
 		m.searchResults = m.rebuildSearchResults()
 		if m.searchSelected >= len(m.searchResults) {
@@ -768,7 +782,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "ctrl+h":
+	case keyCtrlH:
 		m.inputMode = InputNone
 		m.searchQuery = ""
 		m.searchResults = nil
@@ -780,7 +794,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.helpScroll = 0
 		return m, nil
 
-	case "ctrl+p":
+	case keyCtrlP:
 		m.sidebarOpen = !m.sidebarOpen
 		return m, nil
 
@@ -944,7 +958,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.prevMode = m.mode
 		}
 
-	case msg.String() == "ctrl+a":
+	case msg.String() == keyCtrlA:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
 			procs := m.windows[m.currentTab].Processes
 			for _, p := range procs {
@@ -957,12 +971,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case msg.String() == "ctrl+d":
+	case msg.String() == keyCtrlD:
 		m.selectedPIDs = make(map[int]struct{})
 		m.sidebarCache = make(map[int]string)
 		m.showingMultiSelect = false
 
-	case msg.String() == "ctrl+u":
+	case msg.String() == keyCtrlU:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
 			procs := m.windows[m.currentTab].Processes
 			for _, p := range procs {
@@ -983,7 +997,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case msg.String() == "ctrl+e":
+	case msg.String() == keyCtrlE:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
 			procs := m.windows[m.currentTab].Processes
 			if m.selectedProc < len(procs) {
@@ -1025,16 +1039,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case msg.String() == "?":
-		if m.mode == ViewHelp {
-			m.mode = m.prevMode
-		} else {
-			m.prevMode = m.mode
-			m.mode = ViewHelp
-			m.helpScroll = 0
-		}
-
-	case msg.String() == "ctrl+h":
+	case msg.String() == keyHelp, msg.String() == keyCtrlH:
 		if m.mode == ViewHelp {
 			m.mode = m.prevMode
 		} else {
@@ -1060,7 +1065,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, collectSessionsCmd(m.coll)
 		}
 
-	case msg.String() == "tab":
+	case msg.String() == keyTab:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
 			procs := m.windows[m.currentTab].Processes
 			if m.selectedProc < len(procs) {
@@ -1081,7 +1086,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case msg.String() == "ctrl+p":
+	case msg.String() == keyCtrlP:
 		m.sidebarOpen = !m.sidebarOpen
 
 	case msg.String() == " ":
@@ -1251,17 +1256,12 @@ func (m *Model) skipSeparator() {
 		return
 	}
 	procs := m.windows[m.currentTab].Processes
-	for i, p := range procs {
-		if p.PID == 0 {
-			continue
-		}
+	if i := firstRealProcessIndex(procs); i >= 0 {
 		m.selectedProc = i
 		m.browsingProcs = true
-		break
+		return
 	}
-	if !m.browsingProcs {
-		m.selectedProc = 0
-	}
+	m.selectedProc = 0
 }
 
 func (m Model) selectedProcess() *collector.Process {
@@ -1309,7 +1309,7 @@ func (m Model) handleSignalInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyEsc:
 		m.inputMode = InputNone
 		m.inputBuffer = ""
-	case "backspace":
+	case keyBackspace:
 		if len(m.inputBuffer) > 0 {
 			m.inputBuffer = m.inputBuffer[:len(m.inputBuffer)-1]
 		}
@@ -1436,7 +1436,7 @@ var (
 	// StyleLabel is the gold style used for labels in the detail view.
 	StyleLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700"))
 	// StyleValue is the green style used for values in the detail view.
-	StyleValue = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87"))
+	StyleValue = lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen))
 	// StyleSep is the dim purple style used for separators.
 	StyleSep = lipgloss.NewStyle().Foreground(lipgloss.Color("#444488"))
 	// StyleSelected is the reversed bold style for selected items.
@@ -1444,16 +1444,50 @@ var (
 	// StyleTree is the cyan bold style for tree connectors.
 	StyleTree = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fd7ff")).Bold(true)
 	// StyleHigh is the red style for high-usage values.
-	StyleHigh = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f"))
+	StyleHigh = lipgloss.NewStyle().Foreground(lipgloss.Color(colorRed))
 	// StyleFooter is the muted style for the footer line.
 	StyleFooter = lipgloss.NewStyle().Foreground(lipgloss.Color("#555577"))
 	// StyleStatus is the green bold style for status messages.
-	StyleStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)
+	StyleStatus = lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen)).Bold(true)
 	// StyleErr is the red bold style for error messages.
-	StyleErr = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
+	StyleErr = lipgloss.NewStyle().Foreground(lipgloss.Color(colorRed)).Bold(true)
 	// StyleSearchMatch is the yellow bold style for matched text in search results.
 	StyleSearchMatch = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700")).Bold(true)
+	// StyleStopped is the amber style for stopped/tracing-stop processes.
+	StyleStopped = lipgloss.NewStyle().Foreground(lipgloss.Color(colorAmber))
+	// StyleDiskSleep is the purple style for disk-sleep processes.
+	StyleDiskSleep = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPurple))
 )
+
+// statusStyle maps a process status string to its display style. Shared by
+// renderProcessRow and renderSearchResultRow.
+func statusStyle(status string) lipgloss.Style {
+	switch status {
+	case "running":
+		return StyleStatus
+	case "sleeping", "idle":
+		return StyleValue
+	case "stopped", "tracing stop":
+		return StyleStopped
+	case "zombie", "dead":
+		return StyleErr
+	case "disk sleep":
+		return StyleDiskSleep
+	default:
+		return StyleValue
+	}
+}
+
+// firstRealProcessIndex returns the index of the first process that is not a
+// pane separator (PID 0), or -1 when procs holds no real process.
+func firstRealProcessIndex(procs []collector.Process) int {
+	for i, p := range procs {
+		if p.PID != 0 {
+			return i
+		}
+	}
+	return -1
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // View dispatch
@@ -1751,26 +1785,11 @@ func (m Model) renderProcessRow(proc collector.Process, idx int, all []collector
 	memMB := proc.MemRSS / 1024 / 1024
 	baseLeft := fmt.Sprintf("%8d %5.1f%% %7dMB(%4.1f%%) ", proc.PID, proc.CPUPercent, memMB, proc.MemPercent)
 
-	var statusStyle lipgloss.Style
-	switch proc.Status {
-	case "running":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)
-	case "sleeping", "idle":
-		statusStyle = StyleValue
-	case "stopped", "tracing stop":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaf00"))
-	case "zombie", "dead":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
-	case "disk sleep":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#af87ff"))
-	default:
-		statusStyle = StyleValue
-	}
 	statusStr := fmt.Sprintf("%-10s", proc.Status)
 	if len(statusStr) > 10 {
 		statusStr = statusStr[:10]
 	}
-	styledStatus := statusStyle.Render(statusStr)
+	styledStatus := statusStyle(proc.Status).Render(statusStr)
 
 	uncoloredBase := baseLeft + statusStr + " "
 	maxCmdLen := m.width - len(uncoloredBase) - len(prefix) - len(selMarker) - 2
