@@ -1389,6 +1389,37 @@ func TestSidebarMultiSelect_linesFitWidth(t *testing.T) {
 	}
 }
 
+// TestSidebarScrollOffset_preservedOnForcedRefresh: the 2s refresh calls
+// triggerSidebar(true); with the same selected PID the user's scroll position
+// must survive (only a PID change resets it).
+func TestSidebarScrollOffset_preservedOnForcedRefresh(t *testing.T) {
+	m := testModel()
+	m.sidebarOpen = true
+	m.sidebarPID = 1001
+	m.sidebarContent = "pid: 1001"
+	m.sidebarScrollOffset = 3
+
+	m2, _ := m.triggerSidebar(true)
+	if m2.sidebarScrollOffset != 3 {
+		t.Errorf("forced refresh with same PID reset scroll offset: got %d, want 3", m2.sidebarScrollOffset)
+	}
+}
+
+// TestSidebarScrollOffset_resetOnPIDChange: selecting a different process
+// must start the sidebar from the top.
+func TestSidebarScrollOffset_resetOnPIDChange(t *testing.T) {
+	m := testModel()
+	m.sidebarOpen = true
+	m.sidebarPID = 9999
+	m.sidebarContent = "other"
+	m.sidebarScrollOffset = 5
+
+	m2, _ := m.triggerSidebar(false)
+	if m2.sidebarScrollOffset != 0 {
+		t.Errorf("PID change did not reset scroll offset: got %d, want 0", m2.sidebarScrollOffset)
+	}
+}
+
 func TestNoPanic_renderSidebarNegativeHeight(_ *testing.T) {
 	m := testModel()
 	_ = m.renderSidebar(40, -1)

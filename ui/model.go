@@ -2067,7 +2067,9 @@ func (m Model) triggerSidebar(force bool) (Model, tea.Cmd) {
 	if !force && m.sidebarPID == p.PID && m.sidebarContent != "" && m.sidebarContent != "Loading witr info..." {
 		return m, nil
 	}
-	if m.sidebarPID != p.PID || force {
+	if m.sidebarPID != p.PID {
+		// Only a PID change resets the user's scroll position; a forced
+		// refresh (2s tick) of the same process preserves it.
 		m.sidebarScrollOffset = 0
 	}
 	m.sidebarPID = p.PID
