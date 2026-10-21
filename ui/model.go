@@ -231,6 +231,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m = m.applyWindowData(activeWindows)
 
+		// Auto-select first entry in overview when entering/viewing overview.
+		if m.mode == ViewOverview {
+			if len(m.sessions) > 0 {
+				m.browsingSession = true
+				if m.selectedSession < 0 || m.selectedSession >= len(m.sessions) {
+					m.selectedSession = 0
+				}
+			} else {
+				m.browsingSession = false
+				m.selectedSession = 0
+			}
+		}
+
+		// Auto-select first process in main view.
+		if m.mode == ViewMain {
+			m.ensureProcessSelection()
+		}
+
 		// Clean up dead PIDs from selection set.
 		m = m.cleanupDeadPIDSelections()
 
@@ -427,6 +445,57 @@ func (m Model) applyWindowData(windows []collector.WindowData) Model {
 		m.selectedProc = clamp(m.selectedProc, 0, max0(len(procs)-1))
 	}
 	return m
+}
+
+// ensureProcessSelection keeps the process cursor on a real process row.
+//
+// When nothing has been selected yet (browsingProcs is false) it auto-selects
+// the first real process of the current window, so entering a view always
+// highlights an entry. Once the user has navigated, the existing index is
+// preserved and only nudged to the nearest real process if it landed on a
+// pane separator row.
+func (m *Model) ensureProcessSelection() {
+	if m.currentTab >= len(m.windows) {
+		m.browsingProcs = false
+		return
+	}
+	procs := m.windows[m.currentTab].Processes
+	if len(procs) == 0 {
+		m.browsingProcs = false
+		return
+	}
+
+	if !m.browsingProcs {
+		for i, p := range procs {
+			if p.PID != 0 {
+				m.selectedProc = i
+				m.browsingProcs = true
+				return
+			}
+		}
+		m.browsingProcs = false
+		return
+	}
+
+	m.selectedProc = clamp(m.selectedProc, 0, len(procs)-1)
+	if procs[m.selectedProc].PID != 0 {
+		return
+	}
+	// The cursor landed on a separator: move to the nearest real process,
+	// preferring the one below it so the view does not jump to the top.
+	for i := m.selectedProc + 1; i < len(procs); i++ {
+		if procs[i].PID != 0 {
+			m.selectedProc = i
+			return
+		}
+	}
+	for i := m.selectedProc - 1; i >= 0; i-- {
+		if procs[i].PID != 0 {
+			m.selectedProc = i
+			return
+		}
+	}
+	m.browsingProcs = false
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -966,8 +1035,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case msg.String() == "o":
 		if m.mode == ViewOverview {
 			m.mode = ViewMain
+			m.ensureProcessSelection()
 		} else {
 			m.mode = ViewOverview
+			m.browsingSession = true
+			if len(m.sessions) > 0 {
+				if m.selectedSession < 0 || m.selectedSession >= len(m.sessions) {
+					m.selectedSession = 0
+				}
+			} else {
+				m.selectedSession = 0
+			}
 			return m, collectSessionsCmd(m.coll)
 		}
 
@@ -1157,6 +1235,7 @@ func (m *Model) prevTab() {
 
 func (m *Model) skipSeparator() {
 	m.selectedProc = 0
+	m.browsingProcs = false
 	if m.currentTab >= len(m.windows) {
 		return
 	}
@@ -1166,7 +1245,11 @@ func (m *Model) skipSeparator() {
 			continue
 		}
 		m.selectedProc = i
+		m.browsingProcs = true
 		break
+	}
+	if !m.browsingProcs {
+		m.selectedProc = 0
 	}
 }
 

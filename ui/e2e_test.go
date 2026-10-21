@@ -1150,3 +1150,118 @@ func TestMultiSelect_deadPIDCleanup(t *testing.T) {
 		t.Error("expected showingMultiSelect=false after all selections removed")
 	}
 }
+
+// ── Auto-selection ──────────────────────────────────────────────
+
+func TestAutoSelect_mainView_selectsFirstProcessOnRefresh(t *testing.T) {
+	m := testModel()
+	if m.browsingProcs {
+		t.Fatal("expected browsingProcs=false before the first refresh")
+	}
+
+	result, _ := m.Update(sessionDataMsg{m.sessions})
+	m = result.(Model)
+
+	if !m.browsingProcs {
+		t.Error("expected browsingProcs=true after the first refresh")
+	}
+	if m.selectedProc != 0 {
+		t.Errorf("expected selectedProc=0 after the first refresh, got %d", m.selectedProc)
+	}
+	if pid := m.windows[m.currentTab].Processes[m.selectedProc].PID; pid != 1001 {
+		t.Errorf("expected PID 1001 to be auto-selected, got %d", pid)
+	}
+}
+
+func TestAutoSelect_mainView_skipsPaneSeparator(t *testing.T) {
+	m := testModel()
+	m.windows[0].Processes = []collector.Process{
+		{PID: 0, Command: "── pane 0 ──", Depth: -1},
+		{PID: 10, Command: "zsh", Depth: 0},
+	}
+	m.sessions[0].Windows = m.windows
+
+	result, _ := m.Update(sessionDataMsg{m.sessions})
+	m = result.(Model)
+
+	if !m.browsingProcs {
+		t.Fatal("expected browsingProcs=true after the first refresh")
+	}
+	if m.selectedProc != 1 {
+		t.Errorf("expected selectedProc=1 (first real process), got %d", m.selectedProc)
+	}
+	if pid := m.windows[m.currentTab].Processes[m.selectedProc].PID; pid != 10 {
+		t.Errorf("expected PID 10 to be auto-selected, got %d", pid)
+	}
+}
+
+func TestAutoSelect_preservesUserSelectionAcrossRefresh(t *testing.T) {
+	m := testModel()
+
+	// The user navigates to the second process.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = result.(Model)
+	if m.selectedProc != 1 {
+		t.Fatalf("expected selectedProc=1 after j, got %d", m.selectedProc)
+	}
+
+	// A refresh must not move the cursor back to the first entry.
+	result, _ = m.Update(sessionDataMsg{m.sessions})
+	m = result.(Model)
+
+	if m.selectedProc != 1 {
+		t.Errorf("expected selectedProc=1 to survive the refresh, got %d", m.selectedProc)
+	}
+}
+
+func TestAutoSelect_overview_selectsFirstSession(t *testing.T) {
+	m := testModel()
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
+	m = result.(Model)
+
+	if m.mode != ViewOverview {
+		t.Fatalf("expected ViewOverview, got %v", m.mode)
+	}
+	if !m.browsingSession {
+		t.Error("expected browsingSession=true after entering overview")
+	}
+	if m.selectedSession != 0 {
+		t.Errorf("expected selectedSession=0 after entering overview, got %d", m.selectedSession)
+	}
+}
+
+func TestAutoSelect_overviewOnLaunch_selectsFirstSession(t *testing.T) {
+	m := testModel()
+	m.SetMode(ViewOverview)
+
+	result, _ := m.Update(sessionDataMsg{m.sessions})
+	m = result.(Model)
+
+	if !m.browsingSession {
+		t.Error("expected browsingSession=true in overview mode")
+	}
+	if m.selectedSession != 0 {
+		t.Errorf("expected selectedSession=0 in overview mode, got %d", m.selectedSession)
+	}
+}
+
+func TestAutoSelect_overview_preservesUserSelectionAcrossRefresh(t *testing.T) {
+	m := testModel()
+	m.mode = ViewOverview
+	// Two sessions so the cursor can actually move.
+	m.sessions = append(m.sessions, collector.SessionData{Name: "other-session"})
+
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = result.(Model)
+	if m.selectedSession != 1 {
+		t.Fatalf("expected selectedSession=1 after j, got %d", m.selectedSession)
+	}
+
+	result, _ = m.Update(sessionDataMsg{m.sessions})
+	m = result.(Model)
+
+	if m.selectedSession != 1 {
+		t.Errorf("expected selectedSession=1 to survive the refresh, got %d", m.selectedSession)
+	}
+}
