@@ -529,8 +529,11 @@ func (m Model) rebuildSearchResults() []searchResult {
 				refs = append(refs, winRef{sessionIdx: si, windowIdx: wi, procs: w.Processes})
 			}
 		}
-	} else {
+	} else if m.currentTab < len(m.windows) {
 		refs = append(refs, winRef{sessionIdx: -1, windowIdx: m.currentTab, procs: m.windows[m.currentTab].Processes})
+	} else {
+		// The monitored session can disappear, leaving no windows to search.
+		refs = append(refs, winRef{sessionIdx: -1, windowIdx: 0})
 	}
 
 	for _, ref := range refs {
@@ -1432,25 +1435,26 @@ func (m Model) View() string {
 
 	if m.sidebarOpen {
 		sidebarWidth := m.getSidebarWidth()
+		if sidebarWidth > 0 {
+			leftModel := m
+			leftModel.width = m.width - sidebarWidth - 1
 
-		leftModel := m
-		leftModel.width = m.width - sidebarWidth - 1
+			leftView := leftModel.viewMain()
 
-		leftView := leftModel.viewMain()
+			leftViewLines := strings.Split(leftView, "\n")
+			leftViewNoFooter := strings.Join(leftViewLines[:len(leftViewLines)-3], "\n")
 
-		leftViewLines := strings.Split(leftView, "\n")
-		leftViewNoFooter := strings.Join(leftViewLines[:len(leftViewLines)-3], "\n")
+			rightView := m.renderSidebar(sidebarWidth, m.height-3)
 
-		rightView := m.renderSidebar(sidebarWidth, m.height-3)
+			var sepLines []string
+			for i := 0; i < m.height-3; i++ {
+				sepLines = append(sepLines, StyleSep.Render("│"))
+			}
+			sepStr := strings.Join(sepLines, "\n")
 
-		var sepLines []string
-		for i := 0; i < m.height-3; i++ {
-			sepLines = append(sepLines, StyleSep.Render("│"))
+			mainArea := lipgloss.JoinHorizontal(lipgloss.Top, leftViewNoFooter, sepStr, rightView)
+			return mainArea + "\n" + m.renderSeparator() + "\n" + m.renderStatsLine() + "\n" + m.renderFooter()
 		}
-		sepStr := strings.Join(sepLines, "\n")
-
-		mainArea := lipgloss.JoinHorizontal(lipgloss.Top, leftViewNoFooter, sepStr, rightView)
-		return mainArea + "\n" + m.renderSeparator() + "\n" + m.renderStatsLine() + "\n" + m.renderFooter()
 	}
 
 	return m.viewMain()
@@ -2000,21 +2004,40 @@ func (m Model) triggerSidebar(force bool) (Model, tea.Cmd) {
 	return m, m.runWitrSidebarCmd(*p)
 }
 
+// getSidebarWidth returns the width of the diagnostics sidebar, or 0 when the
+// terminal is too narrow to hold both the sidebar and the main pane.
 func (m Model) getSidebarWidth() int {
+	const (
+		minSidebarWidth = 35
+		minMainWidth    = 40
+		maxSidebarWidth = 50
+	)
+	if m.width < minSidebarWidth+minMainWidth {
+		return 0
+	}
 	w := m.width / 3
-	if w < 35 {
-		w = 35
+	if w < minSidebarWidth {
+		w = minSidebarWidth
 	}
-	if w > 50 {
-		w = 50
+	if w > maxSidebarWidth {
+		w = maxSidebarWidth
 	}
-	if w > m.width-40 {
-		w = m.width - 40
+	if w > m.width-minMainWidth {
+		w = m.width - minMainWidth
+	}
+	if w < 0 {
+		w = 0
 	}
 	return w
 }
 
 func (m Model) renderSidebar(width, height int) string {
+	if width < 0 {
+		width = 0
+	}
+	if height < 0 {
+		height = 0
+	}
 	var lines []string
 
 	if m.showingMultiSelect && len(m.selectedPIDs) > 0 {
@@ -2122,7 +2145,7 @@ func (m Model) renderSidebar(width, height int) string {
 		lines = append(lines, strings.Repeat(" ", width))
 	}
 
-	return strings.Join(lines[:height], "\n")
+	return strings.Join(lines[:min(len(lines), height)], "\n")
 }
 
 // pidToName returns the short command name for a PID by scanning windows/sessions.

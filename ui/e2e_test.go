@@ -1265,3 +1265,42 @@ func TestAutoSelect_overview_preservesUserSelectionAcrossRefresh(t *testing.T) {
 		t.Errorf("expected selectedSession=1 to survive the refresh, got %d", m.selectedSession)
 	}
 }
+
+// ── Panic regressions ───────────────────────────────────────────
+
+// A terminal narrower than 40 columns used to make getSidebarWidth return a
+// negative width, and renderSidebar then called strings.Repeat with it.
+func TestNoPanic_narrowTerminal(_ *testing.T) {
+	m := testModel()
+	m.width = 30
+	m.height = 24
+	_ = m.View()
+}
+
+func TestSidebarWidth_neverNegative(t *testing.T) {
+	m := testModel()
+	for w := 1; w <= 120; w++ {
+		m.width = w
+		if got := m.getSidebarWidth(); got < 0 {
+			t.Fatalf("getSidebarWidth() = %d for width %d, want >= 0", got, w)
+		}
+	}
+}
+
+// The monitored session can disappear, or the user can search before the
+// first data refresh lands, leaving m.windows empty.
+func TestNoPanic_searchWithNoWindows(_ *testing.T) {
+	m := testModel()
+	m.windows = nil
+	m.sessions = nil
+	m.searchAllSessions = false
+	m.searchQuery = "n"
+	m.searchResults = m.rebuildSearchResults()
+}
+
+// A terminal 2 rows tall gives renderSidebar a negative height.
+func TestNoPanic_renderSidebarNegativeHeight(_ *testing.T) {
+	m := testModel()
+	_ = m.renderSidebar(40, -1)
+	_ = m.renderSidebar(-5, 10)
+}
