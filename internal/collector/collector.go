@@ -9,8 +9,6 @@ import (
 	itx "github.com/den-tanui/tmux-process-monitor/internal/tmux"
 )
 
-const paneCacheTTL = 500 * time.Millisecond
-
 // Collector gathers process data for one tmux session.
 type Collector struct {
 	tmux    *itx.Client
@@ -18,7 +16,6 @@ type Collector struct {
 
 	mu          sync.RWMutex
 	cpuBaseline map[int]cpuSample
-	paneCache   map[string]paneCacheEntry
 
 	totalRAM int64 // bytes
 }
@@ -29,7 +26,6 @@ func New(tmuxClient *itx.Client, session string) *Collector {
 		tmux:        tmuxClient,
 		session:     session,
 		cpuBaseline: make(map[int]cpuSample),
-		paneCache:   make(map[string]paneCacheEntry),
 		totalRAM:    totalRAMBytes(),
 	}
 }
@@ -41,49 +37,56 @@ func (c *Collector) SetSession(session string) {
 	c.mu.Unlock()
 }
 
+// sessionName returns the active session name under the lock.
+func (c *Collector) sessionName() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.session
+}
+
 // WarmUp establishes CPU baselines for all pane processes asynchronously.
-// Call once after construction; first Collect() will return 0% CPU until
-// the warmup completes (~150ms later).
+// Call once after construction; the first collection will report 0% CPU
+// until the warmup completes (~150ms later).
 func (c *Collector) WarmUp() {
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		windows, err := c.tmux.ListWindows(c.session)
+		session := c.sessionName()
+		windows, _, err := c.tmux.ListAllWindows()
 		if err != nil {
 			return
 		}
-		for _, w := range windows {
-			pids := c.cachedPanePIDs(w.Index)
-			for _, pid := range pids {
-				c.sampleTree(pid)
+		panes, err := c.tmux.ListAllPanes()
+		if err != nil {
+			return
+		}
+		for _, w := range windows[session] {
+			for _, p := range panes[session+":"+strconv.Itoa(w.Index)] {
+				c.sampleTree(p.PID)
 			}
 		}
 	}()
 }
 
-// Collect returns the latest window data for the configured session.
-// It is safe to call from the bubbletea update goroutine.
-func (c *Collector) Collect() ([]WindowData, error) {
-	windows, err := c.tmux.ListWindows(c.session)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]WindowData, 0, len(windows))
-	for _, w := range windows {
-		wd := c.collectWindow(w)
-		result = append(result, wd)
-	}
-	return result, nil
-}
-
 // CollectAllSessions returns summary stats for every active tmux session.
+//
+// The windows and the panes of every session are fetched with two tmux
+// calls, instead of one call per session and one per window.
 func (c *Collector) CollectAllSessions() ([]SessionData, error) {
 	sessions, err := c.tmux.ListSessions()
 	if err != nil {
 		return nil, err
 	}
+	windows, _, err := c.tmux.ListAllWindows()
+	if err != nil {
+		return nil, err
+	}
+	panes, err := c.tmux.ListAllPanes()
+	if err != nil {
+		return nil, err
+	}
 	result := make([]SessionData, 0, len(sessions))
 	for _, name := range sessions {
-		sd := c.collectSession(name)
+		sd := c.collectSessionFrom(name, windows[name], panes)
 		result = append(result, sd)
 	}
 	return result, nil
@@ -92,17 +95,13 @@ func (c *Collector) CollectAllSessions() ([]SessionData, error) {
 // ──────────────────────────────────────────────────────────────────────────────
 // internal
 
-func (c *Collector) collectSession(name string) SessionData {
-	windows, err := c.tmux.ListWindows(name)
-	if err != nil {
-		return SessionData{Name: name}
-	}
+func (c *Collector) collectSessionFrom(name string, windows []itx.Window, panes map[string][]itx.PaneInfo) SessionData {
 	sd := SessionData{
 		Name:        name,
 		WindowCount: len(windows),
 	}
 	for _, w := range windows {
-		wd := c.collectWindowForSession(name, w)
+		wd := c.collectWindowForSession(name, w, panes)
 		sd.Windows = append(sd.Windows, wd)
 		sd.CPUTotal += wd.CPUTotal
 		sd.MemTotal += wd.MemTotal
@@ -111,15 +110,11 @@ func (c *Collector) collectSession(name string) SessionData {
 	return sd
 }
 
-func (c *Collector) collectWindow(w itx.Window) WindowData {
-	return c.collectWindowForSession(c.session, w)
-}
-
-func (c *Collector) collectWindowForSession(session string, w itx.Window) WindowData {
+func (c *Collector) collectWindowForSession(session string, w itx.Window, panes map[string][]itx.PaneInfo) WindowData {
 	wd := WindowData{
 		Name:  w.Name,
 		Index: w.Index,
-		Panes: c.cachedPanesFor(session, w.Index),
+		Panes: panes[session+":"+strconv.Itoa(w.Index)],
 	}
 	for _, p := range wd.Panes {
 		wd.Processes = append(wd.Processes, Process{
@@ -139,15 +134,32 @@ func (c *Collector) collectWindowForSession(session string, w itx.Window) Window
 }
 
 // buildTree recursively builds the process tree rooted at pid.
+//
+// Each process costs three proc reads: the stat file (state, parent pid and
+// the CPU tick counters), the status file (resident set size) and the cmdline
+// file.
 func (c *Collector) buildTree(pid, depth, parentPID int, siblings []int) []Process {
-	if !pidExists(pid) {
+	statData, err := readProcFile(pid, "stat")
+	if err != nil {
+		// The process is gone.
+		return nil
+	}
+	ps := parseStat(statData)
+	if !ps.ok {
 		return nil
 	}
 
-	short, full := readCmdline(pid)
-	ppid := readPPID(pid)
+	ppid := ps.ppid
 	if parentPID >= 0 {
+		// The tree already knows the parent: no extra lookup needed.
 		ppid = parentPID
+	}
+
+	short, full := readCmdline(pid)
+
+	var rss int64
+	if statusData, err := readProcFile(pid, "status"); err == nil {
+		_, rss = parseStatus(statusData)
 	}
 
 	children := readChildren(pid)
@@ -166,13 +178,13 @@ func (c *Collector) buildTree(pid, depth, parentPID int, siblings []int) []Proce
 		PPID:        ppid,
 		Command:     short,
 		FullCmdline: full,
-		CPUPercent:  c.measureCPU(pid),
-		MemRSS:      readMemRSS(pid),
-		MemPercent:  c.MemPercent(readMemRSS(pid)),
+		CPUPercent:  c.measureCPU(pid, ps.ticks),
+		MemRSS:      rss,
+		MemPercent:  c.MemPercent(rss),
 		Depth:       depth,
 		IsLastChild: isLast,
 		HasChildren: len(children) > 0,
-		Status:      readState(pid),
+		Status:      ps.state,
 	}
 
 	result := []Process{proc}
@@ -182,11 +194,11 @@ func (c *Collector) buildTree(pid, depth, parentPID int, siblings []int) []Proce
 	return result
 }
 
-// measureCPU returns the CPU% for pid using delta of /proc/PID/stat ticks.
-func (c *Collector) measureCPU(pid int) float64 {
-	now := nowTS()
-	ticks := readStatTicks(pid)
-	curr := cpuSample{ts: now, totalTicks: ticks}
+// measureCPU returns the CPU% for pid using the delta of the /proc/PID/stat
+// tick counters. The ticks are passed in so the stat file does not have to be
+// read twice.
+func (c *Collector) measureCPU(pid int, ticks uint64) float64 {
+	curr := cpuSample{ts: nowTS(), totalTicks: ticks}
 
 	c.mu.Lock()
 	prev, ok := c.cpuBaseline[pid]
@@ -205,12 +217,16 @@ func (c *Collector) measureCPU(pid int) float64 {
 
 // sampleTree seeds the baseline for pid and all its children (used in WarmUp).
 func (c *Collector) sampleTree(pid int) {
-	if !pidExists(pid) {
+	statData, err := readProcFile(pid, "stat")
+	if err != nil {
 		return
 	}
-	ticks := readStatTicks(pid)
+	ps := parseStat(statData)
+	if !ps.ok {
+		return
+	}
 	c.mu.Lock()
-	c.cpuBaseline[pid] = cpuSample{ts: nowTS(), totalTicks: ticks}
+	c.cpuBaseline[pid] = cpuSample{ts: nowTS(), totalTicks: ps.ticks}
 	c.mu.Unlock()
 	for _, child := range readChildren(pid) {
 		c.sampleTree(child)
@@ -226,39 +242,4 @@ func (c *Collector) MemPercent(rss int64) float64 {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Pane PID cache
-
-func (c *Collector) cachedPanePIDs(windowIndex int) []int {
-	panes := c.cachedPanesFor(c.session, windowIndex)
-	pids := make([]int, len(panes))
-	for i, p := range panes {
-		pids[i] = p.PID
-	}
-	return pids
-}
-
-func (c *Collector) cachedPanesFor(session string, windowIndex int) []itx.PaneInfo {
-	key := session + ":" + itoa(windowIndex)
-
-	c.mu.RLock()
-	entry, ok := c.paneCache[key]
-	c.mu.RUnlock()
-
-	if ok && time.Since(entry.ts) < paneCacheTTL {
-		return entry.panes
-	}
-
-	panes, err := c.tmux.ListPanes(session, windowIndex)
-	if err != nil {
-		return nil
-	}
-
-	c.mu.Lock()
-	c.paneCache[key] = paneCacheEntry{ts: nowTS(), panes: panes}
-	c.mu.Unlock()
-	return panes
-}
-
-func itoa(n int) string {
-	return strconv.Itoa(n)
-}
+// Panes

@@ -13,13 +13,6 @@ import (
 // ErrNotRunning is returned when tmux is not running or the socket is unavailable.
 var ErrNotRunning = errors.New("tmux is not running")
 
-// ErrSessionNotFound is returned when the requested session does not exist.
-type ErrSessionNotFound struct{ Name string }
-
-func (e ErrSessionNotFound) Error() string {
-	return fmt.Sprintf("tmux session %q not found", e.Name)
-}
-
 // Window holds the index and name of a tmux window.
 type Window struct {
 	Index int
@@ -56,79 +49,83 @@ func (c *Client) ListSessions() ([]string, error) {
 	return nonEmpty(strings.Split(out, "\n")), nil
 }
 
-// ListWindows returns all windows in the given session.
-func (c *Client) ListWindows(session string) ([]Window, error) {
-	out, err := run("tmux", "list-windows", "-t", session,
-		"-F", "#{window_index}:#{window_name}")
+// ListAllWindows returns every window of every session in a single tmux
+// call, keyed by session name. The second return value lists the session
+// names in the order tmux reported them.
+//
+// A TAB separates the fields: tmux window names may contain a colon.
+func (c *Client) ListAllWindows() (map[string][]Window, []string, error) {
+	out, err := run("tmux", "list-windows", "-a", "-F",
+		"#{session_name}\t#{window_index}\t#{window_name}")
 	if err != nil {
 		if isNoServerErr(err) {
-			return nil, ErrNotRunning
+			return nil, nil, ErrNotRunning
 		}
-		return nil, fmt.Errorf("list-windows(%s): %w", session, err)
+		return nil, nil, fmt.Errorf("list-windows -a: %w", err)
 	}
-	var windows []Window
-	for _, line := range nonEmpty(strings.Split(out, "\n")) {
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		idx, err := strconv.Atoi(parts[0])
-		if err != nil {
-			continue
-		}
-		windows = append(windows, Window{Index: idx, Name: parts[1]})
-	}
-	return windows, nil
+	windows, order := parseAllWindows(out)
+	return windows, order, nil
 }
 
-// ListPanePIDs returns the shell PIDs for all panes in session:windowIndex.
-func (c *Client) ListPanePIDs(session string, windowIndex int) ([]int, error) {
-	target := fmt.Sprintf("%s:%d", session, windowIndex)
-	out, err := run("tmux", "list-panes", "-t", target, "-F", "#{pane_pid}")
-	if err != nil {
-		if isNoServerErr(err) {
-			return nil, ErrNotRunning
+// parseAllWindows parses the output of "tmux list-windows -a" into a map of
+// session name to its windows, plus the session names in the order they
+// appeared.
+func parseAllWindows(out string) (map[string][]Window, []string) {
+	windows := make(map[string][]Window)
+	var order []string
+	for _, line := range nonEmpty(strings.Split(out, "\n")) {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			continue
 		}
-		return nil, fmt.Errorf("list-panes(%s): %w", target, err)
-	}
-	var pids []int
-	for _, s := range nonEmpty(strings.Split(out, "\n")) {
-		pid, err := strconv.Atoi(strings.TrimSpace(s))
+		idx, err := strconv.Atoi(parts[1])
 		if err != nil {
 			continue
 		}
-		pids = append(pids, pid)
+		name := parts[0]
+		if _, ok := windows[name]; !ok {
+			order = append(order, name)
+		}
+		windows[name] = append(windows[name], Window{Index: idx, Name: parts[2]})
 	}
-	return pids, nil
+	return windows, order
 }
 
-// ListPanes returns index and shell PID for every pane in session:windowIndex.
-func (c *Client) ListPanes(session string, windowIndex int) ([]PaneInfo, error) {
-	target := fmt.Sprintf("%s:%d", session, windowIndex)
-	out, err := run("tmux", "list-panes", "-t", target, "-F", "#{pane_index}:#{pane_pid}")
+// ListAllPanes returns every pane of every window in a single tmux call,
+// keyed by "session:windowIndex".
+func (c *Client) ListAllPanes() (map[string][]PaneInfo, error) {
+	out, err := run("tmux", "list-panes", "-a", "-F",
+		"#{session_name}\t#{window_index}\t#{pane_index}\t#{pane_pid}")
 	if err != nil {
 		if isNoServerErr(err) {
 			return nil, ErrNotRunning
 		}
-		return nil, fmt.Errorf("list-panes(%s): %w", target, err)
+		return nil, fmt.Errorf("list-panes -a: %w", err)
 	}
-	var panes []PaneInfo
+	return parseAllPanes(out), nil
+}
+
+// parseAllPanes parses the output of "tmux list-panes -a" into a map of
+// "session:windowIndex" to its panes.
+func parseAllPanes(out string) map[string][]PaneInfo {
+	panes := make(map[string][]PaneInfo)
 	for _, line := range nonEmpty(strings.Split(out, "\n")) {
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) != 2 {
+		parts := strings.SplitN(line, "\t", 4)
+		if len(parts) != 4 {
 			continue
 		}
-		idx, err := strconv.Atoi(parts[0])
+		idx, err := strconv.Atoi(parts[2])
 		if err != nil {
 			continue
 		}
-		pid, err := strconv.Atoi(parts[1])
+		pid, err := strconv.Atoi(parts[3])
 		if err != nil {
 			continue
 		}
-		panes = append(panes, PaneInfo{Index: idx, PID: pid})
+		key := parts[0] + ":" + parts[1]
+		panes[key] = append(panes[key], PaneInfo{Index: idx, PID: pid})
 	}
-	return panes, nil
+	return panes
 }
 
 // CurrentSession returns the name of the session that owns the calling pane.
@@ -136,15 +133,6 @@ func (c *Client) CurrentSession() (string, error) {
 	out, err := run("tmux", "display-message", "-p", "#{session_name}")
 	if err != nil {
 		return "", fmt.Errorf("display-message session_name: %w", err)
-	}
-	return strings.TrimSpace(out), nil
-}
-
-// CurrentWindow returns the name of the active window in the calling pane.
-func (c *Client) CurrentWindow() (string, error) {
-	out, err := run("tmux", "display-message", "-p", "#{window_name}")
-	if err != nil {
-		return "", fmt.Errorf("display-message window_name: %w", err)
 	}
 	return strings.TrimSpace(out), nil
 }

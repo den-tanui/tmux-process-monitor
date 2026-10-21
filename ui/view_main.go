@@ -3,10 +3,6 @@ package ui
 import (
 	"fmt"
 	"strings"
-
-	"github.com/charmbracelet/lipgloss"
-
-	"github.com/den-tanui/tmux-process-monitor/internal/collector"
 )
 
 // viewMain renders the main process list view.
@@ -147,7 +143,7 @@ func (m Model) renderSearchResultRow(sr searchResult, idx int) string {
 
 	proc := sr.proc
 
-	prefix := treePrefix(proc, sr.procIdx, m.getWindowProcs(sr))
+	prefix := treePrefix(proc, sr.procIdx, m.getProcessList(sr))
 
 	selMarker := ""
 	if _, ok := m.selectedPIDs[proc.PID]; ok {
@@ -157,26 +153,11 @@ func (m Model) renderSearchResultRow(sr searchResult, idx int) string {
 	memMB := proc.MemRSS / 1024 / 1024
 	baseLeft := fmt.Sprintf("%8d %5.1f%% %7dMB(%4.1f%%) ", proc.PID, proc.CPUPercent, memMB, proc.MemPercent)
 
-	var statusStyle lipgloss.Style
-	switch proc.Status {
-	case "running":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)
-	case "sleeping", "idle":
-		statusStyle = StyleValue
-	case "stopped", "tracing stop":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaf00"))
-	case "zombie", "dead":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
-	case "disk sleep":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#af87ff"))
-	default:
-		statusStyle = StyleValue
-	}
 	statusStr := fmt.Sprintf("%-10s", proc.Status)
 	if len(statusStr) > 10 {
 		statusStr = statusStr[:10]
 	}
-	styledStatus := statusStyle.Render(statusStr)
+	styledStatus := statusStyle(proc.Status).Render(statusStr)
 
 	// Command with search matching highlighted.
 	uncoloredBase := baseLeft + statusStr + " "
@@ -243,19 +224,4 @@ func highlightMatch(cmd, query string, maxLen int) string {
 		return s
 	}
 	return result.String()
-}
-
-// getWindowProcs returns the []Process for the window referenced by a searchResult.
-func (m Model) getWindowProcs(sr searchResult) []collector.Process {
-	if sr.sessionIdx >= 0 && sr.sessionIdx < len(m.sessions) {
-		sd := m.sessions[sr.sessionIdx]
-		if sr.windowIdx < len(sd.Windows) {
-			return sd.Windows[sr.windowIdx].Processes
-		}
-		return nil
-	}
-	if sr.windowIdx < len(m.windows) {
-		return m.windows[sr.windowIdx].Processes
-	}
-	return nil
 }

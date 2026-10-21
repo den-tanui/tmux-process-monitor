@@ -2,7 +2,7 @@ BINARY  = tmux-process-monitor
 CMD     = ./cmd/tmux-process-monitor
 GOFLAGS = -ldflags="-s -w"
 
-.PHONY: build build-all install test clean
+.PHONY: build build-all install test test-integration lint clean
 
 build:
 	go build $(GOFLAGS) -o bin/$(BINARY) $(CMD)
@@ -17,7 +17,13 @@ build-all:
 install: build
 
 test:
-	go test ./...
+	go test -short ./...
+
+test-integration:
+	go test -count=1 ./test/...
+
+lint:
+	golangci-lint run ./...
 
 clean:
 	rm -rf bin/ dist/

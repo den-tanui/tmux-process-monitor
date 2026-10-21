@@ -2,11 +2,16 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -43,10 +48,29 @@ const (
 
 // String constants for key matching.
 const (
-	keyEnter = "enter"
-	keyEsc   = "esc"
-	keyDown  = "down"
-	keyUp    = "up"
+	keyEnter     = "enter"
+	keyEsc       = "esc"
+	keyDown      = "down"
+	keyUp        = "up"
+	keyTab       = "tab"
+	keyBackspace = "backspace"
+	keyHelp      = "?"
+	keyCtrlA     = "ctrl+a"
+	keyCtrlD     = "ctrl+d"
+	keyCtrlE     = "ctrl+e"
+	keyCtrlH     = "ctrl+h"
+	keyCtrlP     = "ctrl+p"
+	keyCtrlS     = "ctrl+s"
+	keyCtrlT     = "ctrl+t"
+	keyCtrlU     = "ctrl+u"
+)
+
+// Colour constants shared by the style definitions below.
+const (
+	colorGreen  = "#00ff87"
+	colorAmber  = "#ffaf00"
+	colorRed    = "#ff5f5f"
+	colorPurple = "#af87ff"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -142,6 +166,11 @@ type Model struct {
 	selectedPIDs       map[int]struct{}
 	showingMultiSelect bool
 	sidebarCache       map[int]string // PID → witr -t output (multi-select)
+
+	// ── PID index ─────────────────────────────────────────────────────
+	// pidIndex maps a PID to its process, rebuilt on every data refresh so
+	// the sidebar does not have to scan the whole process tree per lookup.
+	pidIndex map[int]collector.Process
 }
 
 // New constructs and returns an initialised Model.
@@ -167,6 +196,7 @@ func New(
 		sidebarOpen:        true,
 		selectedPIDs:       make(map[int]struct{}),
 		sidebarCache:       make(map[int]string),
+		pidIndex:           make(map[int]collector.Process),
 	}
 }
 
@@ -230,6 +260,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m = m.applyWindowData(activeWindows)
+
+		// Rebuild the PID lookup table for the sidebar.
+		m.rebuildPIDIndex()
 
 		// Auto-select first entry in overview when entering/viewing overview.
 		if m.mode == ViewOverview {
@@ -424,15 +457,12 @@ func (m Model) applyWindowData(windows []collector.WindowData) Model {
 	if m.initialPaneIndex >= 0 && m.currentTab < len(m.windows) {
 		procs := m.windows[m.currentTab].Processes
 		targetCmd := fmt.Sprintf("── pane %d ──", m.initialPaneIndex)
-		found := false
 		for i, p := range procs {
 			if p.PID == 0 && p.Command == targetCmd {
-				found = true
-				continue
-			}
-			if found && p.PID != 0 {
-				m.selectedProc = i
-				m.browsingProcs = true
+				if j := firstRealProcessIndex(procs[i+1:]); j >= 0 {
+					m.selectedProc = i + 1 + j
+					m.browsingProcs = true
+				}
 				break
 			}
 		}
@@ -466,12 +496,10 @@ func (m *Model) ensureProcessSelection() {
 	}
 
 	if !m.browsingProcs {
-		for i, p := range procs {
-			if p.PID != 0 {
-				m.selectedProc = i
-				m.browsingProcs = true
-				return
-			}
+		if i := firstRealProcessIndex(procs); i >= 0 {
+			m.selectedProc = i
+			m.browsingProcs = true
+			return
 		}
 		m.browsingProcs = false
 		return
@@ -514,7 +542,7 @@ func (m Model) rebuildSearchResults() []searchResult {
 		tier int // 0=exact, 1=prefix, 2=substring
 	}
 
-	var raw []match
+	raw := make([]match, 0, 256)
 
 	// Determine scope: current windows or all sessions.
 	type winRef struct {
@@ -529,8 +557,11 @@ func (m Model) rebuildSearchResults() []searchResult {
 				refs = append(refs, winRef{sessionIdx: si, windowIdx: wi, procs: w.Processes})
 			}
 		}
-	} else {
+	} else if m.currentTab < len(m.windows) {
 		refs = append(refs, winRef{sessionIdx: -1, windowIdx: m.currentTab, procs: m.windows[m.currentTab].Processes})
+	} else {
+		// The monitored session can disappear, leaving no windows to search.
+		refs = append(refs, winRef{sessionIdx: -1, windowIdx: 0})
 	}
 
 	for _, ref := range refs {
@@ -552,22 +583,16 @@ func (m Model) rebuildSearchResults() []searchResult {
 		}
 	}
 
-	// Sort: tier ascending, then CPU% descending.
-	for i := 0; i < len(raw); i++ {
-		for j := i + 1; j < len(raw); j++ {
-			swap := false
-			if raw[i].tier > raw[j].tier {
-				swap = true
-			} else if raw[i].tier == raw[j].tier && raw[i].sr.proc.CPUPercent < raw[j].sr.proc.CPUPercent {
-				swap = true
-			}
-			if swap {
-				raw[i], raw[j] = raw[j], raw[i]
-			}
+	// Sort: tier ascending, then CPU% descending. The sort is stable so
+	// that processes of the same tier keep their tree order.
+	sort.SliceStable(raw, func(i, j int) bool {
+		if raw[i].tier != raw[j].tier {
+			return raw[i].tier < raw[j].tier
 		}
-	}
+		return raw[i].sr.proc.CPUPercent > raw[j].sr.proc.CPUPercent
+	})
 
-	var results []searchResult
+	results := make([]searchResult, 0, len(raw))
 	for _, m := range raw {
 		results = append(results, m.sr)
 	}
@@ -589,7 +614,7 @@ func (m Model) rebuildSearchResults() []searchResult {
 			}
 		}
 
-		var expanded []searchResult
+		expanded := make([]searchResult, 0, len(results))
 		for _, sr := range results {
 			expanded = append(expanded, sr)
 			if sr.isChild {
@@ -645,7 +670,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "backspace":
+	case keyBackspace:
 		if len(m.searchQuery) > 0 {
 			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
 		}
@@ -671,7 +696,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "tab":
+	case keyTab:
 		if len(m.searchResults) > 0 && m.searchSelected < len(m.searchResults) {
 			sr := m.searchResults[m.searchSelected]
 			pid := sr.proc.PID
@@ -692,7 +717,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "ctrl+a":
+	case keyCtrlA:
 		for _, sr := range m.searchResults {
 			m.selectedPIDs[sr.proc.PID] = struct{}{}
 		}
@@ -704,13 +729,13 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "ctrl+d":
+	case keyCtrlD:
 		m.selectedPIDs = make(map[int]struct{})
 		m.sidebarCache = make(map[int]string)
 		m.showingMultiSelect = false
 		return m, nil
 
-	case "ctrl+u":
+	case keyCtrlU:
 		// Invert: build set of all result PIDs, flip each.
 		pidSet := make(map[int]bool)
 		for _, sr := range m.searchResults {
@@ -734,14 +759,14 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "ctrl+e":
+	case keyCtrlE:
 		if len(m.searchResults) > 0 && m.searchSelected < len(m.searchResults) {
 			sr := m.searchResults[m.searchSelected]
 			return m, m.toggleDescendants(sr)
 		}
 		return m, nil
 
-	case "ctrl+s":
+	case keyCtrlS:
 		m.searchAllSessions = !m.searchAllSessions
 		m.searchResults = m.rebuildSearchResults()
 		if m.searchSelected >= len(m.searchResults) {
@@ -749,7 +774,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "ctrl+t":
+	case keyCtrlT:
 		m.searchShowChildren = !m.searchShowChildren
 		m.searchResults = m.rebuildSearchResults()
 		if m.searchSelected >= len(m.searchResults) {
@@ -757,7 +782,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "ctrl+h":
+	case keyCtrlH:
 		m.inputMode = InputNone
 		m.searchQuery = ""
 		m.searchResults = nil
@@ -769,7 +794,7 @@ func (m Model) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.helpScroll = 0
 		return m, nil
 
-	case "ctrl+p":
+	case keyCtrlP:
 		m.sidebarOpen = !m.sidebarOpen
 		return m, nil
 
@@ -918,7 +943,30 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case msg.String() == "ctrl+c", msg.String() == "q", msg.String() == "Q":
 		return m, tea.Quit
+	}
 
+	// Concern-based dispatch. The four groups own disjoint key sets, so
+	// evaluation order cannot change behaviour.
+	if nm, cmd, ok := m.handleViewToggleKey(msg); ok {
+		return nm, cmd
+	}
+	if nm, cmd, ok := m.handleMultiSelectKey(msg); ok {
+		return nm, cmd
+	}
+	if nm, cmd, ok := m.handleNavigationKey(msg); ok {
+		return nm, cmd
+	}
+	if nm, cmd, ok := m.handleProcessActionKey(msg); ok {
+		return nm, cmd
+	}
+	return m, nil
+}
+
+// handleViewToggleKey handles keys that switch views or toggle global UI
+// state: search entry, help overlay, overview, sidebar, freeze and esc.
+// It reports whether the key was one of its bindings.
+func (m Model) handleViewToggleKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch {
 	case msg.String() == "/":
 		if m.mode == ViewMain || m.mode == ViewOverview {
 			m.inputMode = InputSearch
@@ -932,8 +980,66 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.prevMode = m.mode
 		}
+		return m, nil, true
 
-	case msg.String() == "ctrl+a":
+	case msg.String() == keyHelp, msg.String() == keyCtrlH:
+		if m.mode == ViewHelp {
+			m.mode = m.prevMode
+		} else {
+			m.prevMode = m.mode
+			m.mode = ViewHelp
+			m.helpScroll = 0
+		}
+		return m, nil, true
+
+	case msg.String() == "o":
+		if m.mode == ViewOverview {
+			m.mode = ViewMain
+			m.ensureProcessSelection()
+			return m, nil, true
+		}
+		m.mode = ViewOverview
+		m.browsingSession = true
+		if len(m.sessions) > 0 {
+			if m.selectedSession < 0 || m.selectedSession >= len(m.sessions) {
+				m.selectedSession = 0
+			}
+		} else {
+			m.selectedSession = 0
+		}
+		return m, collectSessionsCmd(m.coll), true
+
+	case msg.String() == keyCtrlP:
+		m.sidebarOpen = !m.sidebarOpen
+		return m, nil, true
+
+	case msg.String() == " ":
+		m.frozen = !m.frozen
+		if !m.frozen {
+			return m, collectSessionsCmd(m.coll), true
+		}
+		return m, nil, true
+
+	case msg.String() == keyEsc:
+		m.selectedPIDs = make(map[int]struct{})
+		m.sidebarCache = make(map[int]string)
+		m.showingMultiSelect = false
+		switch m.mode {
+		case ViewHelp:
+			m.mode = m.prevMode
+		case ViewOverview:
+			m.mode = ViewMain
+		}
+		return m, nil, true
+	}
+	return m, nil, false
+}
+
+// handleMultiSelectKey handles the multi-select bindings (ctrl+a/d/u/e and
+// tab), most of them gated on the main view.
+func (m Model) handleMultiSelectKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch {
+	case msg.String() == keyCtrlA:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
 			procs := m.windows[m.currentTab].Processes
 			for _, p := range procs {
@@ -945,13 +1051,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.showingMultiSelect = true
 			}
 		}
+		return m, nil, true
 
-	case msg.String() == "ctrl+d":
+	case msg.String() == keyCtrlD:
 		m.selectedPIDs = make(map[int]struct{})
 		m.sidebarCache = make(map[int]string)
 		m.showingMultiSelect = false
+		return m, nil, true
 
-	case msg.String() == "ctrl+u":
+	case msg.String() == keyCtrlU:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
 			procs := m.windows[m.currentTab].Processes
 			for _, p := range procs {
@@ -971,14 +1079,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.showingMultiSelect = false
 			}
 		}
+		return m, nil, true
 
-	case msg.String() == "ctrl+e":
+	case msg.String() == keyCtrlE:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
 			procs := m.windows[m.currentTab].Processes
 			if m.selectedProc < len(procs) {
 				p := procs[m.selectedProc]
 				if p.PID == 0 {
-					break
+					return m, nil, true
 				}
 				// Build descendant list.
 				descPIDs := []int{p.PID}
@@ -1013,49 +1122,15 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		return m, nil, true
 
-	case msg.String() == "?":
-		if m.mode == ViewHelp {
-			m.mode = m.prevMode
-		} else {
-			m.prevMode = m.mode
-			m.mode = ViewHelp
-			m.helpScroll = 0
-		}
-
-	case msg.String() == "ctrl+h":
-		if m.mode == ViewHelp {
-			m.mode = m.prevMode
-		} else {
-			m.prevMode = m.mode
-			m.mode = ViewHelp
-			m.helpScroll = 0
-		}
-
-	case msg.String() == "o":
-		if m.mode == ViewOverview {
-			m.mode = ViewMain
-			m.ensureProcessSelection()
-		} else {
-			m.mode = ViewOverview
-			m.browsingSession = true
-			if len(m.sessions) > 0 {
-				if m.selectedSession < 0 || m.selectedSession >= len(m.sessions) {
-					m.selectedSession = 0
-				}
-			} else {
-				m.selectedSession = 0
-			}
-			return m, collectSessionsCmd(m.coll)
-		}
-
-	case msg.String() == "tab":
+	case msg.String() == keyTab:
 		if m.mode == ViewMain && m.currentTab < len(m.windows) {
 			procs := m.windows[m.currentTab].Processes
 			if m.selectedProc < len(procs) {
 				pid := procs[m.selectedProc].PID
 				if pid == 0 {
-					break
+					return m, nil, true
 				}
 				if _, ok := m.selectedPIDs[pid]; ok {
 					delete(m.selectedPIDs, pid)
@@ -1069,38 +1144,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		return m, nil, true
+	}
+	return m, nil, false
+}
 
-	case msg.String() == "ctrl+p":
-		m.sidebarOpen = !m.sidebarOpen
-
-	case msg.String() == " ":
-		m.frozen = !m.frozen
-		if !m.frozen {
-			return m, collectSessionsCmd(m.coll)
-		}
-
-	case msg.String() == keyEsc:
-		m.selectedPIDs = make(map[int]struct{})
-		m.sidebarCache = make(map[int]string)
-		m.showingMultiSelect = false
-		switch m.mode {
-		case ViewHelp:
-			m.mode = m.prevMode
-		case ViewOverview:
-			m.mode = ViewMain
-		}
-
+// handleNavigationKey handles tab navigation, process/session cursor movement
+// and enter (open detail / select session). Overview-specific behaviour stays
+// behind the same mode checks the original switch used.
+func (m Model) handleNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch {
 	case msg.String() == "left", msg.String() == "h", msg.String() == "H":
-		if m.mode == ViewOverview {
-			break
+		if m.mode != ViewOverview {
+			m.prevTab()
 		}
-		m.prevTab()
+		return m, nil, true
 
 	case msg.String() == "right", msg.String() == "l", msg.String() == "L":
-		if m.mode == ViewOverview {
-			break
+		if m.mode != ViewOverview {
+			m.nextTab()
 		}
-		m.nextTab()
+		return m, nil, true
 
 	case msg.String() == keyDown, msg.String() == "j":
 		if m.mode == ViewOverview {
@@ -1124,6 +1188,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		return m, nil, true
 
 	case msg.String() == keyUp, msg.String() == "k":
 		if m.mode == ViewOverview {
@@ -1154,6 +1219,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		return m, nil, true
 
 	case msg.String() == keyEnter:
 		switch m.mode {
@@ -1164,7 +1230,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.mode = ViewMain
 				m.currentTab = 0
 				m.browsingSession = false
-				return m, collectSessionsCmd(m.coll)
+				return m, collectSessionsCmd(m.coll), true
 			}
 		case ViewMain:
 			if m.currentTab < len(m.windows) {
@@ -1177,46 +1243,58 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					}
 					m.mode = ViewDetail
 					m.detailReady = false
-					return m, m.runWitrCmd(p)
+					return m, m.runWitrCmd(p), true
 				}
 			}
 		}
+		return m, nil, true
+	}
+	return m, nil, false
+}
 
+// handleProcessActionKey handles signals, clipboard copy and horizontal scroll.
+func (m Model) handleProcessActionKey(msg tea.KeyMsg) (Model, tea.Cmd, bool) {
+	switch {
 	case msg.String() == "x", msg.String() == "X":
 		if m.browsingProcs {
-			return m, m.sigTermCmd()
+			return m, m.sigTermCmd(), true
 		}
+		return m, nil, true
 
 	case msg.String() == "s":
 		if m.browsingProcs {
 			m.inputMode = InputSignal
 			m.inputBuffer = ""
 		}
+		return m, nil, true
 
 	case msg.String() == "y":
 		if m.browsingProcs {
 			if cmd := m.selectedCommand(); cmd != "" {
-				return m, copyToClipboard(cmd)
+				return m, copyToClipboard(cmd), true
 			}
 		}
+		return m, nil, true
 
 	case msg.String() == "Y":
 		if m.browsingProcs {
 			if pid := m.selectedPID(); pid > 0 {
-				return m, copyToClipboard(fmt.Sprintf("%d", pid))
+				return m, copyToClipboard(fmt.Sprintf("%d", pid)), true
 			}
 		}
+		return m, nil, true
 
 	case msg.String() == "alt+left", msg.String() == "alt+h":
 		if m.hScrollOff > 0 {
 			m.hScrollOff -= 10
 		}
+		return m, nil, true
 
 	case msg.String() == "alt+right", msg.String() == "alt+l":
 		m.hScrollOff += 10
+		return m, nil, true
 	}
-
-	return m, nil
+	return m, nil, false
 }
 
 func (m *Model) nextTab() {
@@ -1240,17 +1318,12 @@ func (m *Model) skipSeparator() {
 		return
 	}
 	procs := m.windows[m.currentTab].Processes
-	for i, p := range procs {
-		if p.PID == 0 {
-			continue
-		}
+	if i := firstRealProcessIndex(procs); i >= 0 {
 		m.selectedProc = i
 		m.browsingProcs = true
-		break
+		return
 	}
-	if !m.browsingProcs {
-		m.selectedProc = 0
-	}
+	m.selectedProc = 0
 }
 
 func (m Model) selectedProcess() *collector.Process {
@@ -1298,7 +1371,7 @@ func (m Model) handleSignalInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case keyEsc:
 		m.inputMode = InputNone
 		m.inputBuffer = ""
-	case "backspace":
+	case keyBackspace:
 		if len(m.inputBuffer) > 0 {
 			m.inputBuffer = m.inputBuffer[:len(m.inputBuffer)-1]
 		}
@@ -1314,27 +1387,55 @@ func (m Model) handleSignalInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // ──────────────────────────────────────────────────────────────────────────────
 // Commands (async side effects)
 
+// witrFailure renders the message shown when a witr invocation fails.
+//
+// witr runs under `script`, so a missing witr binary surfaces as a shell
+// exit status of 127, not as "executable file not found". A missing `script`
+// binary is a different failure again and is reported separately.
+func witrFailure(err error, out []byte, p collector.Process) string {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 127 {
+		return fmt.Sprintf(
+			"witr is not installed. Showing basic process information.\n"+
+				"(Install 'witr' and add it to your PATH for advanced diagnostics.)\n\n"+
+				"Command: %s\n"+
+				"Full Cmdline: %s\n\n"+
+				"PID: %d\n"+
+				"PPID: %d\n\n"+
+				"CPU Usage: %.1f%%\n"+
+				"Memory RSS: %d MB (%.1f%%)\n",
+			p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
+		)
+	}
+	var execErr *exec.Error
+	if errors.As(err, &execErr) && errors.Is(err, exec.ErrNotFound) {
+		return fmt.Sprintf(
+			"'script' is not installed, so witr cannot be run.\n"+
+				"(Install 'util-linux' for script, or install witr and add it to your PATH.)\n\n"+
+				"Command: %s\n"+
+				"Full Cmdline: %s\n\n"+
+				"PID: %d\n",
+			p.Command, p.FullCmdline, p.PID,
+		)
+	}
+	return fmt.Sprintf("witr error: %v\n%s", err, string(out))
+}
+
+// killStatusMessage renders the status line for a signal attempt.
+func killStatusMessage(err error, signal string, pid int) string {
+	if err != nil {
+		return fmt.Sprintf("Failed to send %s to PID %d: %v", signal, pid, err)
+	}
+	return fmt.Sprintf("Sent %s to PID %d", signal, pid)
+}
+
 func (m Model) runWitrCmd(p collector.Process) tea.Cmd {
 	return func() tea.Msg {
 		cmd := exec.Command("script", "-qec", fmt.Sprintf("witr --pid %d --verbose", p.PID), "/dev/null")
 		cmd.Env = append(os.Environ(), "CLICOLOR_FORCE=1", "FORCE_COLOR=1", "COLORTERM=truecolor", "TERM=xterm-256color")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			if strings.Contains(err.Error(), "executable file not found") {
-				fallback := fmt.Sprintf(
-					"witr is not installed. Showing basic process information.\n"+
-						"(Install 'witr' and add it to your PATH for advanced diagnostics.)\n\n"+
-						"Command: %s\n"+
-						"Full Cmdline: %s\n\n"+
-						"PID: %d\n"+
-						"PPID: %d\n\n"+
-						"CPU Usage: %.1f%%\n"+
-						"Memory RSS: %d MB (%.1f%%)\n"+
-						p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
-				)
-				return witrMsg(fallback)
-			}
-			return witrMsg(fmt.Sprintf("witr error: %v\n%s", err, string(out)))
+			return witrMsg(witrFailure(err, out, p))
 		}
 		return witrMsg(string(out))
 	}
@@ -1346,8 +1447,8 @@ func (m Model) sigTermCmd() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		exec.Command("kill", "-15", fmt.Sprintf("%d", pid)).Run() //nolint:errcheck
-		return statusMsg(fmt.Sprintf("Sent SIGTERM to PID %d", pid))
+		err := exec.Command("kill", "-15", strconv.Itoa(pid)).Run()
+		return statusMsg(killStatusMessage(err, "SIGTERM", pid))
 	}
 }
 
@@ -1357,8 +1458,8 @@ func (m Model) sendSignalCmd(sig int) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		exec.Command("kill", fmt.Sprintf("-%d", sig), fmt.Sprintf("%d", pid)).Run() //nolint:errcheck
-		return statusMsg(fmt.Sprintf("Sent signal %d to PID %d", sig, pid))
+		err := exec.Command("kill", "-"+strconv.Itoa(sig), strconv.Itoa(pid)).Run()
+		return statusMsg(killStatusMessage(err, "signal "+strconv.Itoa(sig), pid))
 	}
 }
 
@@ -1397,7 +1498,7 @@ var (
 	// StyleLabel is the gold style used for labels in the detail view.
 	StyleLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700"))
 	// StyleValue is the green style used for values in the detail view.
-	StyleValue = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87"))
+	StyleValue = lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen))
 	// StyleSep is the dim purple style used for separators.
 	StyleSep = lipgloss.NewStyle().Foreground(lipgloss.Color("#444488"))
 	// StyleSelected is the reversed bold style for selected items.
@@ -1405,16 +1506,50 @@ var (
 	// StyleTree is the cyan bold style for tree connectors.
 	StyleTree = lipgloss.NewStyle().Foreground(lipgloss.Color("#5fd7ff")).Bold(true)
 	// StyleHigh is the red style for high-usage values.
-	StyleHigh = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f"))
+	StyleHigh = lipgloss.NewStyle().Foreground(lipgloss.Color(colorRed))
 	// StyleFooter is the muted style for the footer line.
 	StyleFooter = lipgloss.NewStyle().Foreground(lipgloss.Color("#555577"))
 	// StyleStatus is the green bold style for status messages.
-	StyleStatus = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)
+	StyleStatus = lipgloss.NewStyle().Foreground(lipgloss.Color(colorGreen)).Bold(true)
 	// StyleErr is the red bold style for error messages.
-	StyleErr = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
+	StyleErr = lipgloss.NewStyle().Foreground(lipgloss.Color(colorRed)).Bold(true)
 	// StyleSearchMatch is the yellow bold style for matched text in search results.
 	StyleSearchMatch = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd700")).Bold(true)
+	// StyleStopped is the amber style for stopped/tracing-stop processes.
+	StyleStopped = lipgloss.NewStyle().Foreground(lipgloss.Color(colorAmber))
+	// StyleDiskSleep is the purple style for disk-sleep processes.
+	StyleDiskSleep = lipgloss.NewStyle().Foreground(lipgloss.Color(colorPurple))
 )
+
+// statusStyle maps a process status string to its display style. Shared by
+// renderProcessRow and renderSearchResultRow.
+func statusStyle(status string) lipgloss.Style {
+	switch status {
+	case "running":
+		return StyleStatus
+	case "sleeping", "idle":
+		return StyleValue
+	case "stopped", "tracing stop":
+		return StyleStopped
+	case "zombie", "dead":
+		return StyleErr
+	case "disk sleep":
+		return StyleDiskSleep
+	default:
+		return StyleValue
+	}
+}
+
+// firstRealProcessIndex returns the index of the first process that is not a
+// pane separator (PID 0), or -1 when procs holds no real process.
+func firstRealProcessIndex(procs []collector.Process) int {
+	for i, p := range procs {
+		if p.PID != 0 {
+			return i
+		}
+	}
+	return -1
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // View dispatch
@@ -1432,25 +1567,26 @@ func (m Model) View() string {
 
 	if m.sidebarOpen {
 		sidebarWidth := m.getSidebarWidth()
+		if sidebarWidth > 0 {
+			leftModel := m
+			leftModel.width = m.width - sidebarWidth - 1
 
-		leftModel := m
-		leftModel.width = m.width - sidebarWidth - 1
+			leftView := leftModel.viewMain()
 
-		leftView := leftModel.viewMain()
+			leftViewLines := strings.Split(leftView, "\n")
+			leftViewNoFooter := strings.Join(leftViewLines[:len(leftViewLines)-3], "\n")
 
-		leftViewLines := strings.Split(leftView, "\n")
-		leftViewNoFooter := strings.Join(leftViewLines[:len(leftViewLines)-3], "\n")
+			rightView := m.renderSidebar(sidebarWidth, m.height-3)
 
-		rightView := m.renderSidebar(sidebarWidth, m.height-3)
+			var sepLines []string
+			for i := 0; i < m.height-3; i++ {
+				sepLines = append(sepLines, StyleSep.Render("│"))
+			}
+			sepStr := strings.Join(sepLines, "\n")
 
-		var sepLines []string
-		for i := 0; i < m.height-3; i++ {
-			sepLines = append(sepLines, StyleSep.Render("│"))
+			mainArea := lipgloss.JoinHorizontal(lipgloss.Top, leftViewNoFooter, sepStr, rightView)
+			return mainArea + "\n" + m.renderSeparator() + "\n" + m.renderStatsLine() + "\n" + m.renderFooter()
 		}
-		sepStr := strings.Join(sepLines, "\n")
-
-		mainArea := lipgloss.JoinHorizontal(lipgloss.Top, leftViewNoFooter, sepStr, rightView)
-		return mainArea + "\n" + m.renderSeparator() + "\n" + m.renderStatsLine() + "\n" + m.renderFooter()
 	}
 
 	return m.viewMain()
@@ -1463,11 +1599,9 @@ func (m Model) View() string {
 func (m Model) renderHeader() string {
 	var cpuTotal float64
 	var memTotal int64
-	var procTotal int
 	for _, w := range m.windows {
 		cpuTotal += w.CPUTotal
 		memTotal += w.MemTotal
-		procTotal += w.ProcessCount
 	}
 	memMB := memTotal / 1024 / 1024
 
@@ -1609,6 +1743,9 @@ func (m Model) renderFooter() string {
 	if m.statusMsg != "" && time.Now().Before(m.statusExpiry) {
 		return StyleStatus.Render(m.statusMsg)
 	}
+	if m.lastErr != nil {
+		return StyleErr.Render(center(fmt.Sprintf("error: %v", m.lastErr), m.width))
+	}
 
 	shortcuts := []string{
 		"h/l:win", "j/k:nav", "space:freeze", "/:search", "ctrl+h:help",
@@ -1710,26 +1847,11 @@ func (m Model) renderProcessRow(proc collector.Process, idx int, all []collector
 	memMB := proc.MemRSS / 1024 / 1024
 	baseLeft := fmt.Sprintf("%8d %5.1f%% %7dMB(%4.1f%%) ", proc.PID, proc.CPUPercent, memMB, proc.MemPercent)
 
-	var statusStyle lipgloss.Style
-	switch proc.Status {
-	case "running":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ff87")).Bold(true)
-	case "sleeping", "idle":
-		statusStyle = StyleValue
-	case "stopped", "tracing stop":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ffaf00"))
-	case "zombie", "dead":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff5f5f")).Bold(true)
-	case "disk sleep":
-		statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#af87ff"))
-	default:
-		statusStyle = StyleValue
-	}
 	statusStr := fmt.Sprintf("%-10s", proc.Status)
 	if len(statusStr) > 10 {
 		statusStr = statusStr[:10]
 	}
-	styledStatus := statusStyle.Render(statusStr)
+	styledStatus := statusStyle(proc.Status).Render(statusStr)
 
 	uncoloredBase := baseLeft + statusStr + " "
 	maxCmdLen := m.width - len(uncoloredBase) - len(prefix) - len(selMarker) - 2
@@ -1743,19 +1865,25 @@ func (m Model) renderProcessRow(proc collector.Process, idx int, all []collector
 	if isSelected {
 		// Horizontal scroll for the selected row.
 		if len(cmd) > maxCmdLen {
+			origLen := len(cmd)
 			start := m.hScrollOff
-			if start > len(cmd)-maxCmdLen {
-				start = len(cmd) - maxCmdLen
+			if start > origLen-maxCmdLen {
+				start = origLen - maxCmdLen
+			}
+			if start < 0 {
+				start = 0
 			}
 			end := start + maxCmdLen
-			if end > len(cmd) {
-				end = len(cmd)
+			if end > origLen {
+				end = origLen
 			}
 			cmd = cmd[start:end]
 			if start > 0 {
 				cmd = "«" + cmd[1:]
 			}
-			if start+maxCmdLen < len(cmd)+start {
+			if end < origLen && len(cmd) > 0 {
+				// The marker replaces the last visible character so the
+				// row keeps the same width.
 				cmd = cmd[:len(cmd)-1] + "»"
 			}
 		}
@@ -1871,18 +1999,62 @@ func clamp(v, lo, hi int) int {
 }
 
 // matchField returns the match tier (0=exact, 1=prefix, 2=substring, -1=no match)
-// for a lowercased query against a field value.
+// for a case-insensitive query against a field value.
+//
+// It compares without lowercasing the field, which would copy every command
+// line on every keystroke.
 func matchField(q, field string) int {
-	lower := strings.ToLower(field)
 	switch {
-	case lower == q:
+	case q == "":
 		return 0
-	case strings.HasPrefix(lower, q):
+	case len(field) == len(q) && strings.EqualFold(field, q):
+		return 0
+	case hasPrefixFold(field, q):
 		return 1
-	case strings.Contains(lower, q):
+	case containsFold(field, q):
 		return 2
 	}
 	return -1
+}
+
+// hasPrefixFold reports whether s starts with prefix, ignoring case.
+//
+// The prefix is walked rune by rune so a multi-byte character is never
+// split in the middle.
+func hasPrefixFold(s, prefix string) bool {
+	if prefix == "" {
+		return true
+	}
+	if len(s) < len(prefix) {
+		return false
+	}
+	for _, r := range prefix {
+		if s == "" {
+			return false
+		}
+		rs, size := utf8.DecodeRuneInString(s)
+		if unicode.ToLower(rs) != unicode.ToLower(r) {
+			return false
+		}
+		s = s[size:]
+	}
+	return true
+}
+
+// containsFold reports whether substr occurs in s, ignoring case.
+func containsFold(s, substr string) bool {
+	if substr == "" {
+		return true
+	}
+	if len(substr) > len(s) {
+		return false
+	}
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if hasPrefixFold(s[i:], substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanupDeadPIDSelections removes any selected PID that is no longer
@@ -1945,21 +2117,7 @@ func (m Model) runWitrSidebarCmd(p collector.Process) tea.Cmd {
 		cmd.Env = append(os.Environ(), "CLICOLOR_FORCE=1", "FORCE_COLOR=1", "COLORTERM=truecolor", "TERM=xterm-256color")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			if strings.Contains(err.Error(), "executable file not found") {
-				fallback := fmt.Sprintf(
-					"witr is not installed.\n"+
-						"(Install 'witr' for advanced diagnostics.)\n\n"+
-						"Command: %s\n"+
-						"Full Cmdline: %s\n\n"+
-						"PID: %d\n"+
-						"PPID: %d\n\n"+
-						"CPU Usage: %.1f%%\n"+
-						"Memory RSS: %d MB (%.1f%%)\n"+
-						p.Command, p.FullCmdline, p.PID, p.PPID, p.CPUPercent, p.MemRSS/1024/1024, p.MemPercent,
-				)
-				return sidebarMsg{pid: p.PID, content: fallback}
-			}
-			return sidebarMsg{pid: p.PID, content: fmt.Sprintf("witr error: %v\n%s", err, string(out))}
+			return sidebarMsg{pid: p.PID, content: witrFailure(err, out, p)}
 		}
 		return sidebarMsg{pid: p.PID, content: string(out)}
 	}
@@ -1990,7 +2148,9 @@ func (m Model) triggerSidebar(force bool) (Model, tea.Cmd) {
 	if !force && m.sidebarPID == p.PID && m.sidebarContent != "" && m.sidebarContent != "Loading witr info..." {
 		return m, nil
 	}
-	if m.sidebarPID != p.PID || force {
+	if m.sidebarPID != p.PID {
+		// Only a PID change resets the user's scroll position; a forced
+		// refresh (2s tick) of the same process preserves it.
 		m.sidebarScrollOffset = 0
 	}
 	m.sidebarPID = p.PID
@@ -2000,21 +2160,40 @@ func (m Model) triggerSidebar(force bool) (Model, tea.Cmd) {
 	return m, m.runWitrSidebarCmd(*p)
 }
 
+// getSidebarWidth returns the width of the diagnostics sidebar, or 0 when the
+// terminal is too narrow to hold both the sidebar and the main pane.
 func (m Model) getSidebarWidth() int {
+	const (
+		minSidebarWidth = 35
+		minMainWidth    = 40
+		maxSidebarWidth = 50
+	)
+	if m.width < minSidebarWidth+minMainWidth {
+		return 0
+	}
 	w := m.width / 3
-	if w < 35 {
-		w = 35
+	if w < minSidebarWidth {
+		w = minSidebarWidth
 	}
-	if w > 50 {
-		w = 50
+	if w > maxSidebarWidth {
+		w = maxSidebarWidth
 	}
-	if w > m.width-40 {
-		w = m.width - 40
+	if w > m.width-minMainWidth {
+		w = m.width - minMainWidth
+	}
+	if w < 0 {
+		w = 0
 	}
 	return w
 }
 
 func (m Model) renderSidebar(width, height int) string {
+	if width < 0 {
+		width = 0
+	}
+	if height < 0 {
+		height = 0
+	}
 	var lines []string
 
 	if m.showingMultiSelect && len(m.selectedPIDs) > 0 {
@@ -2027,7 +2206,14 @@ func (m Model) renderSidebar(width, height int) string {
 			if len(lines) >= height {
 				break
 			}
-			lines = append(lines, "  "+line)
+			// Prefixed with two spaces: wrap to width-2 so no line exceeds
+			// the sidebar width (overflow would skew the joined frame).
+			for _, wl := range wrapANSI(line, max0(width-2)) {
+				if len(lines) >= height {
+					break
+				}
+				lines = append(lines, "  "+wl)
+			}
 		}
 
 		if len(lines) < height {
@@ -2065,7 +2251,9 @@ func (m Model) renderSidebar(width, height int) string {
 					if len(lines) >= height {
 						break
 					}
-					wrapped := wrapANSI(cl, width)
+					// Prefixed with two spaces: wrap to width-2 so no line
+					// exceeds the sidebar width.
+					wrapped := wrapANSI(cl, max0(width-2))
 					for _, wl := range wrapped {
 						if len(lines) >= height {
 							break
@@ -2122,54 +2310,72 @@ func (m Model) renderSidebar(width, height int) string {
 		lines = append(lines, strings.Repeat(" ", width))
 	}
 
-	return strings.Join(lines[:height], "\n")
+	return strings.Join(lines[:min(len(lines), height)], "\n")
 }
 
-// pidToName returns the short command name for a PID by scanning windows/sessions.
+// pidToName returns the short command name for a PID.
 func (m Model) pidToName(pid int) string {
-	for _, w := range m.windows {
-		for _, p := range w.Processes {
-			if p.PID == pid {
-				return p.Command
-			}
-		}
-	}
-	for _, sd := range m.sessions {
-		for _, w := range sd.Windows {
-			for _, p := range w.Processes {
-				if p.PID == pid {
-					return p.Command
-				}
-			}
-		}
+	if p, ok := m.pidIndex[pid]; ok {
+		return p.Command
 	}
 	return "?"
 }
 
-// pidToCmdline returns the full command line for a PID by scanning windows/sessions.
+// pidToCmdline returns the full command line for a PID.
 func (m Model) pidToCmdline(pid int) string {
-	for _, w := range m.windows {
-		for _, p := range w.Processes {
-			if p.PID == pid {
-				return p.FullCmdline
+	if p, ok := m.pidIndex[pid]; ok {
+		return p.FullCmdline
+	}
+	return ""
+}
+
+// rebuildPIDIndex rebuilds the PID → process lookup table. It covers the
+// current window as well as every window of every session, which is what the
+// multi-select sidebar needs.
+func (m *Model) rebuildPIDIndex() {
+	idx := make(map[int]collector.Process, len(m.pidIndex)+64)
+	add := func(procs []collector.Process) {
+		for _, p := range procs {
+			if p.PID != 0 {
+				idx[p.PID] = p
 			}
 		}
+	}
+	for _, w := range m.windows {
+		add(w.Processes)
 	}
 	for _, sd := range m.sessions {
 		for _, w := range sd.Windows {
-			for _, p := range w.Processes {
-				if p.PID == pid {
-					return p.FullCmdline
-				}
-			}
+			add(w.Processes)
 		}
 	}
-	return ""
+	m.pidIndex = idx
+}
+
+// stripControl removes C0 control characters (CR, BS, BEL, …) that corrupt
+// terminal layout when content is embedded in the frame joined with the
+// process list: an embedded \r sends the cursor to column 0 and the padding
+// spaces then wipe the process row's left edge. witr output is produced under
+// `script -qec`, whose pty emits CRLF line endings. ANSI escape sequences are
+// preserved.
+func stripControl(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool {
+		return r < 0x20 && r != '\x1b' && r != '\n'
+	}) {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 && r != '\x1b' && r != '\n' {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // wrapANSI wraps an ANSI-styled string to fit within the given width,
 // preserving ANSI codes and adding a "↳ " wrap marker on continuation lines.
 func wrapANSI(s string, width int) []string {
+	s = stripControl(s)
 	if lipgloss.Width(s) <= width {
 		return []string{padded(s, width)}
 	}

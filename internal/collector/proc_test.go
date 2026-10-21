@@ -14,95 +14,93 @@ func skipIfNoProc(t *testing.T) {
 	}
 }
 
-// ── readStatTicks ──────────────────────────────────────────────────
+// ── parseStat ─────────────────────────────────────────────────────
 
-func TestReadStatTicks_ourPID(t *testing.T) {
+func TestParseStat_ourPID(t *testing.T) {
 	skipIfNoProc(t)
-	ticks := readStatTicks(os.Getpid())
-	// A very fast process may report 0 ticks — just verify the function ran.
-	t.Logf("readStatTicks(%d) = %d", os.Getpid(), ticks)
+	data, err := os.ReadFile("/proc/self/stat")
+	if err != nil {
+		t.Fatalf("read stat: %v", err)
+	}
+	ps := parseStat(data)
+	if !ps.ok {
+		t.Fatal("expected the stat file to parse")
+	}
+	if ps.ppid <= 0 {
+		t.Errorf("expected a non-zero parent pid, got %d", ps.ppid)
+	}
+	if ps.state == "" {
+		t.Error("expected a non-empty state")
+	}
+	// A very fast process may legitimately report 0 ticks, so only the
+	// successful parse is asserted here.
+	t.Logf("parseStat(self) = ppid %d, state %q, ticks %d", ps.ppid, ps.state, ps.ticks)
 }
 
-func TestReadStatTicks_badPID(t *testing.T) {
-	skipIfNoProc(t)
-	ticks := readStatTicks(999999999)
-	if ticks != 0 {
-		t.Errorf("expected 0 for non-existent PID, got %d", ticks)
+func TestParseStat_commWithSpaces(t *testing.T) {
+	// The comm field is parenthesised and may contain spaces, so the parser
+	// has to scan for the last ')'.
+	raw := "1234 (weird ) name) S 42 0 0 -1 0 0 0 0 0 0 77 13 extra fields\n"
+	ps := parseStat([]byte(raw))
+	if !ps.ok {
+		t.Fatal("expected the stat to parse")
+	}
+	if ps.ppid != 42 {
+		t.Errorf("expected ppid 42, got %d", ps.ppid)
+	}
+	if ps.state != "sleeping" {
+		t.Errorf("expected 'sleeping', got %q", ps.state)
+	}
+	if ps.ticks != 90 {
+		t.Errorf("expected 90 ticks, got %d", ps.ticks)
 	}
 }
 
-func TestReadStatTicks_pid1(t *testing.T) {
-	skipIfNoProc(t)
-	ticks := readStatTicks(1)
-	if ticks == 0 {
-		t.Errorf("expected non-zero stat ticks for PID 1, got 0")
+func TestParseStat_truncated(t *testing.T) {
+	if parseStat([]byte("1234 (short) S 1")).ok {
+		t.Error("expected a truncated stat file not to parse")
+	}
+	if parseStat([]byte("garbage")).ok {
+		t.Error("expected garbage not to parse")
 	}
 }
 
-// ── readMemRSS ─────────────────────────────────────────────────────
+func TestParseStat_stateNames(t *testing.T) {
+	cases := map[string]string{
+		"R": "running", "S": "sleeping", "D": "disk sleep", "Z": "zombie",
+		"T": "stopped", "t": "tracing stop", "I": "idle", "X": "dead",
+	}
+	for code, want := range cases {
+		if got := stateName([]byte(code)); got != want {
+			t.Errorf("stateName(%q) = %q, want %q", code, got, want)
+		}
+	}
+}
 
-func TestReadMemRSS_ourPID(t *testing.T) {
+// ── parseStatus ───────────────────────────────────────────────────
+
+func TestParseStatus_ourPID(t *testing.T) {
 	skipIfNoProc(t)
-	rss := readMemRSS(os.Getpid())
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	ppid, rss := parseStatus(data)
+	if ppid <= 0 {
+		t.Errorf("expected a non-zero parent pid, got %d", ppid)
+	}
 	if rss == 0 {
-		t.Errorf("expected non-zero RSS for PID %d, got 0", os.Getpid())
+		t.Error("expected a non-zero RSS")
 	}
-	// Go test binaries are at least a few KB.
 	if rss < 4096 {
 		t.Errorf("RSS seems too small: %d bytes", rss)
 	}
 }
 
-func TestReadMemRSS_badPID(t *testing.T) {
-	skipIfNoProc(t)
-	rss := readMemRSS(999999999)
-	if rss != 0 {
-		t.Errorf("expected 0 for non-existent PID, got %d", rss)
-	}
-}
-
-// ── readPPID ───────────────────────────────────────────────────────
-
-func TestReadPPID_ourPID(t *testing.T) {
-	skipIfNoProc(t)
-	ppid := readPPID(os.Getpid())
-	if ppid == 0 {
-		t.Errorf("expected non-zero parent PID for PID %d, got 0", os.Getpid())
-	}
-}
-
-func TestReadPPID_badPID(t *testing.T) {
-	skipIfNoProc(t)
-	ppid := readPPID(999999999)
-	if ppid != 0 {
-		t.Errorf("expected 0 for non-existent PID, got %d", ppid)
-	}
-}
-
-func TestReadPPID_pid1(t *testing.T) {
-	skipIfNoProc(t)
-	ppid := readPPID(1)
-	// PID 1 has PPID 0 on most systems.
-	if ppid < 0 || ppid > 1 {
-		t.Errorf("expected PPID 0 or 1 for PID 1, got %d", ppid)
-	}
-}
-
-// ── readState ──────────────────────────────────────────────────────
-
-func TestReadState_ourPID(t *testing.T) {
-	skipIfNoProc(t)
-	state := readState(os.Getpid())
-	if state != "running" && state != "sleeping" {
-		t.Errorf("expected 'running' or 'sleeping' for our PID, got %q", state)
-	}
-}
-
-func TestReadState_badPID(t *testing.T) {
-	skipIfNoProc(t)
-	state := readState(999999999)
-	if state != "Unknown" {
-		t.Errorf("expected 'Unknown' for non-existent PID, got %q", state)
+func TestParseStatus_missing(t *testing.T) {
+	ppid, rss := parseStatus([]byte("Name:\tfoo\n"))
+	if ppid != 0 || rss != 0 {
+		t.Errorf("expected zero values, got ppid=%d rss=%d", ppid, rss)
 	}
 }
 
@@ -116,29 +114,6 @@ func TestTotalRAMBytes_sanity(t *testing.T) {
 	}
 	if ram < 4*1024*1024 {
 		t.Errorf("total RAM seems too low: %d bytes (%d MB)", ram, ram/1024/1024)
-	}
-}
-
-// ── pidExists ──────────────────────────────────────────────────────
-
-func TestPidExists_true(t *testing.T) {
-	skipIfNoProc(t)
-	if !pidExists(1) {
-		t.Error("expected PID 1 to exist")
-	}
-}
-
-func TestPidExists_ourPID(t *testing.T) {
-	skipIfNoProc(t)
-	if !pidExists(os.Getpid()) {
-		t.Error("expected our own PID to exist")
-	}
-}
-
-func TestPidExists_false(t *testing.T) {
-	skipIfNoProc(t)
-	if pidExists(999999999) {
-		t.Error("expected PID 999999999 to not exist")
 	}
 }
 
