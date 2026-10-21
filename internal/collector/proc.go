@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -15,12 +14,9 @@ import (
 
 const statusUnknown = "Unknown"
 
-var clocksPerSec = uint64(100) // default; overridden by init() if available
-
-func init() {
-	// runtime.GOARCH is unused here; we just ensure Linux clock ticks default.
-	_ = runtime.GOOS
-}
+// clocksPerSec is the kernel's USER_HZ: the unit of the utime/stime fields
+// in /proc/PID/stat. It is 100 on every mainstream Linux configuration.
+const clocksPerSec = 100
 
 // readStatTicks reads utime+stime from /proc/PID/stat (fields 14 and 15,
 // 1-indexed). Returns 0 on any error; caller must handle the zero case.

@@ -54,8 +54,3 @@ type cpuSample struct {
 	ts         time.Time
 	totalTicks uint64
 }
-
-type paneCacheEntry struct {
-	ts    time.Time
-	panes []itx.PaneInfo
-}

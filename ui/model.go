@@ -1497,11 +1497,9 @@ func (m Model) View() string {
 func (m Model) renderHeader() string {
 	var cpuTotal float64
 	var memTotal int64
-	var procTotal int
 	for _, w := range m.windows {
 		cpuTotal += w.CPUTotal
 		memTotal += w.MemTotal
-		procTotal += w.ProcessCount
 	}
 	memMB := memTotal / 1024 / 1024
 

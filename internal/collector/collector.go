@@ -2,14 +2,11 @@ package collector
 
 import (
 	"fmt"
-	"strconv"
 	"sync"
 	"time"
 
 	itx "github.com/den-tanui/tmux-process-monitor/internal/tmux"
 )
-
-const paneCacheTTL = 500 * time.Millisecond
 
 // Collector gathers process data for one tmux session.
 type Collector struct {
@@ -18,7 +15,6 @@ type Collector struct {
 
 	mu          sync.RWMutex
 	cpuBaseline map[int]cpuSample
-	paneCache   map[string]paneCacheEntry
 
 	totalRAM int64 // bytes
 }
@@ -29,7 +25,6 @@ func New(tmuxClient *itx.Client, session string) *Collector {
 		tmux:        tmuxClient,
 		session:     session,
 		cpuBaseline: make(map[int]cpuSample),
-		paneCache:   make(map[string]paneCacheEntry),
 		totalRAM:    totalRAMBytes(),
 	}
 }
@@ -59,27 +54,11 @@ func (c *Collector) WarmUp() {
 			return
 		}
 		for _, w := range windows {
-			pids := c.cachedPanePIDs(w.Index)
-			for _, pid := range pids {
+			for _, pid := range c.panePIDs(c.sessionName(), w.Index) {
 				c.sampleTree(pid)
 			}
 		}
 	}()
-}
-
-// Collect returns the latest window data for the configured session.
-// It is safe to call from the bubbletea update goroutine.
-func (c *Collector) Collect() ([]WindowData, error) {
-	windows, err := c.tmux.ListWindows(c.sessionName())
-	if err != nil {
-		return nil, err
-	}
-	result := make([]WindowData, 0, len(windows))
-	for _, w := range windows {
-		wd := c.collectWindow(w)
-		result = append(result, wd)
-	}
-	return result, nil
 }
 
 // CollectAllSessions returns summary stats for every active tmux session.
@@ -118,15 +97,11 @@ func (c *Collector) collectSession(name string) SessionData {
 	return sd
 }
 
-func (c *Collector) collectWindow(w itx.Window) WindowData {
-	return c.collectWindowForSession(c.sessionName(), w)
-}
-
 func (c *Collector) collectWindowForSession(session string, w itx.Window) WindowData {
 	wd := WindowData{
 		Name:  w.Name,
 		Index: w.Index,
-		Panes: c.cachedPanesFor(session, w.Index),
+		Panes: c.listPanes(session, w.Index),
 	}
 	for _, p := range wd.Panes {
 		wd.Processes = append(wd.Processes, Process{
@@ -233,39 +208,25 @@ func (c *Collector) MemPercent(rss int64) float64 {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Pane PID cache
+// Panes
 
-func (c *Collector) cachedPanePIDs(windowIndex int) []int {
-	panes := c.cachedPanesFor(c.sessionName(), windowIndex)
+// listPanes returns the panes of a window. The result is not cached: each
+// cache key is visited exactly once per collection cycle, and the cache TTL
+// was shorter than the refresh interval, so it never produced a hit.
+func (c *Collector) listPanes(session string, windowIndex int) []itx.PaneInfo {
+	panes, err := c.tmux.ListPanes(session, windowIndex)
+	if err != nil {
+		return nil
+	}
+	return panes
+}
+
+// panePIDs returns the shell PIDs of every pane in a window.
+func (c *Collector) panePIDs(session string, windowIndex int) []int {
+	panes := c.listPanes(session, windowIndex)
 	pids := make([]int, len(panes))
 	for i, p := range panes {
 		pids[i] = p.PID
 	}
 	return pids
-}
-
-func (c *Collector) cachedPanesFor(session string, windowIndex int) []itx.PaneInfo {
-	key := session + ":" + itoa(windowIndex)
-
-	c.mu.RLock()
-	entry, ok := c.paneCache[key]
-	c.mu.RUnlock()
-
-	if ok && time.Since(entry.ts) < paneCacheTTL {
-		return entry.panes
-	}
-
-	panes, err := c.tmux.ListPanes(session, windowIndex)
-	if err != nil {
-		return nil
-	}
-
-	c.mu.Lock()
-	c.paneCache[key] = paneCacheEntry{ts: nowTS(), panes: panes}
-	c.mu.Unlock()
-	return panes
-}
-
-func itoa(n int) string {
-	return strconv.Itoa(n)
 }

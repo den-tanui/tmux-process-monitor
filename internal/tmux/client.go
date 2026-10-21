@@ -13,13 +13,6 @@ import (
 // ErrNotRunning is returned when tmux is not running or the socket is unavailable.
 var ErrNotRunning = errors.New("tmux is not running")
 
-// ErrSessionNotFound is returned when the requested session does not exist.
-type ErrSessionNotFound struct{ Name string }
-
-func (e ErrSessionNotFound) Error() string {
-	return fmt.Sprintf("tmux session %q not found", e.Name)
-}
-
 // Window holds the index and name of a tmux window.
 type Window struct {
 	Index int
@@ -81,27 +74,6 @@ func (c *Client) ListWindows(session string) ([]Window, error) {
 	return windows, nil
 }
 
-// ListPanePIDs returns the shell PIDs for all panes in session:windowIndex.
-func (c *Client) ListPanePIDs(session string, windowIndex int) ([]int, error) {
-	target := fmt.Sprintf("%s:%d", session, windowIndex)
-	out, err := run("tmux", "list-panes", "-t", target, "-F", "#{pane_pid}")
-	if err != nil {
-		if isNoServerErr(err) {
-			return nil, ErrNotRunning
-		}
-		return nil, fmt.Errorf("list-panes(%s): %w", target, err)
-	}
-	var pids []int
-	for _, s := range nonEmpty(strings.Split(out, "\n")) {
-		pid, err := strconv.Atoi(strings.TrimSpace(s))
-		if err != nil {
-			continue
-		}
-		pids = append(pids, pid)
-	}
-	return pids, nil
-}
-
 // ListPanes returns index and shell PID for every pane in session:windowIndex.
 func (c *Client) ListPanes(session string, windowIndex int) ([]PaneInfo, error) {
 	target := fmt.Sprintf("%s:%d", session, windowIndex)
@@ -136,15 +108,6 @@ func (c *Client) CurrentSession() (string, error) {
 	out, err := run("tmux", "display-message", "-p", "#{session_name}")
 	if err != nil {
 		return "", fmt.Errorf("display-message session_name: %w", err)
-	}
-	return strings.TrimSpace(out), nil
-}
-
-// CurrentWindow returns the name of the active window in the calling pane.
-func (c *Client) CurrentWindow() (string, error) {
-	out, err := run("tmux", "display-message", "-p", "#{window_name}")
-	if err != nil {
-		return "", fmt.Errorf("display-message window_name: %w", err)
 	}
 	return strings.TrimSpace(out), nil
 }
