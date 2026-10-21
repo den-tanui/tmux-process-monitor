@@ -2,6 +2,7 @@ package collector
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -44,32 +45,48 @@ func (c *Collector) sessionName() string {
 }
 
 // WarmUp establishes CPU baselines for all pane processes asynchronously.
-// Call once after construction; first Collect() will return 0% CPU until
-// the warmup completes (~150ms later).
+// Call once after construction; the first collection will report 0% CPU
+// until the warmup completes (~150ms later).
 func (c *Collector) WarmUp() {
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		windows, err := c.tmux.ListWindows(c.sessionName())
+		session := c.sessionName()
+		windows, _, err := c.tmux.ListAllWindows()
 		if err != nil {
 			return
 		}
-		for _, w := range windows {
-			for _, pid := range c.panePIDs(c.sessionName(), w.Index) {
-				c.sampleTree(pid)
+		panes, err := c.tmux.ListAllPanes()
+		if err != nil {
+			return
+		}
+		for _, w := range windows[session] {
+			for _, p := range panes[session+":"+strconv.Itoa(w.Index)] {
+				c.sampleTree(p.PID)
 			}
 		}
 	}()
 }
 
 // CollectAllSessions returns summary stats for every active tmux session.
+//
+// The windows and the panes of every session are fetched with two tmux
+// calls, instead of one call per session and one per window.
 func (c *Collector) CollectAllSessions() ([]SessionData, error) {
 	sessions, err := c.tmux.ListSessions()
 	if err != nil {
 		return nil, err
 	}
+	windows, _, err := c.tmux.ListAllWindows()
+	if err != nil {
+		return nil, err
+	}
+	panes, err := c.tmux.ListAllPanes()
+	if err != nil {
+		return nil, err
+	}
 	result := make([]SessionData, 0, len(sessions))
 	for _, name := range sessions {
-		sd := c.collectSession(name)
+		sd := c.collectSessionFrom(name, windows[name], panes)
 		result = append(result, sd)
 	}
 	return result, nil
@@ -78,17 +95,13 @@ func (c *Collector) CollectAllSessions() ([]SessionData, error) {
 // ──────────────────────────────────────────────────────────────────────────────
 // internal
 
-func (c *Collector) collectSession(name string) SessionData {
-	windows, err := c.tmux.ListWindows(name)
-	if err != nil {
-		return SessionData{Name: name}
-	}
+func (c *Collector) collectSessionFrom(name string, windows []itx.Window, panes map[string][]itx.PaneInfo) SessionData {
 	sd := SessionData{
 		Name:        name,
 		WindowCount: len(windows),
 	}
 	for _, w := range windows {
-		wd := c.collectWindowForSession(name, w)
+		wd := c.collectWindowForSession(name, w, panes)
 		sd.Windows = append(sd.Windows, wd)
 		sd.CPUTotal += wd.CPUTotal
 		sd.MemTotal += wd.MemTotal
@@ -97,11 +110,11 @@ func (c *Collector) collectSession(name string) SessionData {
 	return sd
 }
 
-func (c *Collector) collectWindowForSession(session string, w itx.Window) WindowData {
+func (c *Collector) collectWindowForSession(session string, w itx.Window, panes map[string][]itx.PaneInfo) WindowData {
 	wd := WindowData{
 		Name:  w.Name,
 		Index: w.Index,
-		Panes: c.listPanes(session, w.Index),
+		Panes: panes[session+":"+strconv.Itoa(w.Index)],
 	}
 	for _, p := range wd.Panes {
 		wd.Processes = append(wd.Processes, Process{
@@ -230,24 +243,3 @@ func (c *Collector) MemPercent(rss int64) float64 {
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Panes
-
-// listPanes returns the panes of a window. The result is not cached: each
-// cache key is visited exactly once per collection cycle, and the cache TTL
-// was shorter than the refresh interval, so it never produced a hit.
-func (c *Collector) listPanes(session string, windowIndex int) []itx.PaneInfo {
-	panes, err := c.tmux.ListPanes(session, windowIndex)
-	if err != nil {
-		return nil
-	}
-	return panes
-}
-
-// panePIDs returns the shell PIDs of every pane in a window.
-func (c *Collector) panePIDs(session string, windowIndex int) []int {
-	panes := c.listPanes(session, windowIndex)
-	pids := make([]int, len(panes))
-	for i, p := range panes {
-		pids[i] = p.PID
-	}
-	return pids
-}

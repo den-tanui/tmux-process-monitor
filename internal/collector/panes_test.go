@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,22 +13,27 @@ import (
 // fakeTmux installs a stub `tmux` executable at the front of PATH.
 //
 // The stub appends every invocation to a calls file and prints the canned
-// output registered for the subcommand (the first argument). It returns the
-// path of the calls file so tests can count the invocations.
+// output registered for the invocation. Responses are keyed by the first two
+// arguments ("list-windows -a"), falling back to the first argument alone
+// ("list-sessions"). It returns the path of the calls file so tests can
+// count the invocations.
 func fakeTmux(t *testing.T, responses map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	callsFile := filepath.Join(dir, "calls")
 
 	script := "#!/bin/sh\n" +
-		"echo \"$*\" >> \"" + callsFile + "\"\n" +
+		"echo \"$1 $2\" >> \"" + callsFile + "\"\n" +
+		"f=\"" + dir + "/out_$1_$2\"\n" +
+		"if [ -f \"$f\" ]; then cat \"$f\"; exit 0; fi\n" +
 		"f=\"" + dir + "/out_$1\"\n" +
 		"if [ -f \"$f\" ]; then cat \"$f\"; fi\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake tmux: %v", err)
 	}
-	for sub, out := range responses {
-		if err := os.WriteFile(filepath.Join(dir, "out_"+sub), []byte(out), 0o644); err != nil {
+	for key, out := range responses {
+		name := strings.ReplaceAll(key, " ", "_")
+		if err := os.WriteFile(filepath.Join(dir, "out_"+name), []byte(out), 0o644); err != nil {
 			t.Fatalf("write fake tmux response: %v", err)
 		}
 	}
@@ -40,11 +46,12 @@ func fakeTmux(t *testing.T, responses map[string]string) string {
 // start with the pane separator row.
 func TestCollectWindowForSession_panes(t *testing.T) {
 	fakeTmux(t, map[string]string{
-		"list-panes": "0:999999\n",
+		"list-panes -t": "0:999999\n",
 	})
 
 	c := New(itx.New(), "sess")
-	wd := c.collectWindowForSession("sess", itx.Window{Index: 0, Name: "win"})
+	panes := map[string][]itx.PaneInfo{"sess:0": {{Index: 0, PID: 999999}}}
+	wd := c.collectWindowForSession("sess", itx.Window{Index: 0, Name: "win"}, panes)
 
 	if len(wd.Panes) != 1 {
 		t.Fatalf("expected 1 pane, got %d", len(wd.Panes))
@@ -64,13 +71,56 @@ func TestCollectWindowForSession_panes(t *testing.T) {
 	}
 }
 
+// TestCollectAllSessions_tmuxExecCount verifies that a collection cycle
+// spawns a small, fixed number of tmux processes instead of one per window.
+// Three sessions with four windows each used to cost 16 invocations.
+func TestCollectAllSessions_tmuxExecCount(t *testing.T) {
+	var sessions, allWindows, allPanes, oneWindow, onePane strings.Builder
+	for s := 1; s <= 3; s++ {
+		fmt.Fprintf(&sessions, "sess%d\n", s)
+		for w := 0; w < 4; w++ {
+			fmt.Fprintf(&allWindows, "sess%d\t%d\twin%d\n", s, w, w)
+			fmt.Fprintf(&allPanes, "sess%d\t%d\t0\t999999\n", s, w)
+		}
+	}
+	for w := 0; w < 4; w++ {
+		fmt.Fprintf(&oneWindow, "%d:win%d\n", w, w)
+		fmt.Fprintf(&onePane, "0:999999\n")
+	}
+
+	calls := fakeTmux(t, map[string]string{
+		"list-sessions":   sessions.String(),
+		"list-windows -a": allWindows.String(),
+		"list-windows -t": oneWindow.String(),
+		"list-panes -a":   allPanes.String(),
+		"list-panes -t":   onePane.String(),
+	})
+
+	c := New(itx.New(), "sess1")
+	if _, err := c.CollectAllSessions(); err != nil {
+		t.Fatalf("CollectAllSessions: %v", err)
+	}
+
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatalf("read calls: %v", err)
+	}
+	n := len(strings.Split(strings.TrimSpace(string(data)), "\n"))
+	t.Logf("tmux invocations: %d", n)
+	if n > 4 {
+		t.Errorf("expected at most 4 tmux invocations per cycle, got %d", n)
+	}
+}
+
 // TestCollectAllSessions_paneData verifies that a session's windows carry
 // their pane data after a refresh.
 func TestCollectAllSessions_paneData(t *testing.T) {
 	fakeTmux(t, map[string]string{
-		"list-sessions": "sess\n",
-		"list-windows":  "0:win\n",
-		"list-panes":    "0:999999\n",
+		"list-sessions":   "sess\n",
+		"list-windows -a": "sess\t0\twin\n",
+		"list-windows -t": "0:win\n",
+		"list-panes -a":   "sess\t0\t0\t999999\n",
+		"list-panes -t":   "0:999999\n",
 	})
 
 	c := New(itx.New(), "sess")
