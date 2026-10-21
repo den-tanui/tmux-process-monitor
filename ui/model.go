@@ -2123,7 +2123,14 @@ func (m Model) renderSidebar(width, height int) string {
 			if len(lines) >= height {
 				break
 			}
-			lines = append(lines, "  "+line)
+			// Prefixed with two spaces: wrap to width-2 so no line exceeds
+			// the sidebar width (overflow would skew the joined frame).
+			for _, wl := range wrapANSI(line, max0(width-2)) {
+				if len(lines) >= height {
+					break
+				}
+				lines = append(lines, "  "+wl)
+			}
 		}
 
 		if len(lines) < height {
@@ -2161,7 +2168,9 @@ func (m Model) renderSidebar(width, height int) string {
 					if len(lines) >= height {
 						break
 					}
-					wrapped := wrapANSI(cl, width)
+					// Prefixed with two spaces: wrap to width-2 so no line
+					// exceeds the sidebar width.
+					wrapped := wrapANSI(cl, max0(width-2))
 					for _, wl := range wrapped {
 						if len(lines) >= height {
 							break

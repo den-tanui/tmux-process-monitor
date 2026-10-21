@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/den-tanui/tmux-process-monitor/internal/collector"
 )
@@ -1362,6 +1363,28 @@ func TestSidebarCache_noControlChars(t *testing.T) {
 	for i, ln := range strings.Split(out, "\n") {
 		if strings.ContainsAny(ln, "\r\b") {
 			t.Errorf("multi-select sidebar line %d contains control chars: %q", i, ln)
+		}
+	}
+}
+
+// TestSidebarMultiSelect_linesFitWidth: wrapped content lines are prefixed
+// with two spaces, so they must be wrapped to width-2. Lines wider than the
+// sidebar skew lipgloss.JoinHorizontal column alignment for the whole frame.
+func TestSidebarMultiSelect_linesFitWidth(t *testing.T) {
+	m := testModel()
+	m.sidebarOpen = true
+	m.showingMultiSelect = true
+	m.selectedPIDs = map[int]struct{}{1001: {}}
+	m.sidebarCache = map[int]string{
+		1001: "a long witr output line that certainly exceeds the sidebar width and must wrap",
+	}
+	m.rebuildPIDIndex()
+
+	const width = 40
+	out := m.renderSidebar(width, 16)
+	for i, ln := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(ln); w > width {
+			t.Errorf("sidebar line %d visible width %d exceeds sidebar width %d: %q", i, w, width, ln)
 		}
 	}
 }
