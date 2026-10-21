@@ -121,15 +121,32 @@ func (c *Collector) collectWindowForSession(session string, w itx.Window) Window
 }
 
 // buildTree recursively builds the process tree rooted at pid.
+//
+// Each process costs three proc reads: the stat file (state, parent pid and
+// the CPU tick counters), the status file (resident set size) and the cmdline
+// file.
 func (c *Collector) buildTree(pid, depth, parentPID int, siblings []int) []Process {
-	if !pidExists(pid) {
+	statData, err := readProcFile(pid, "stat")
+	if err != nil {
+		// The process is gone.
+		return nil
+	}
+	ps := parseStat(statData)
+	if !ps.ok {
 		return nil
 	}
 
-	short, full := readCmdline(pid)
-	ppid := readPPID(pid)
+	ppid := ps.ppid
 	if parentPID >= 0 {
+		// The tree already knows the parent: no extra lookup needed.
 		ppid = parentPID
+	}
+
+	short, full := readCmdline(pid)
+
+	var rss int64
+	if statusData, err := readProcFile(pid, "status"); err == nil {
+		_, rss = parseStatus(statusData)
 	}
 
 	children := readChildren(pid)
@@ -148,13 +165,13 @@ func (c *Collector) buildTree(pid, depth, parentPID int, siblings []int) []Proce
 		PPID:        ppid,
 		Command:     short,
 		FullCmdline: full,
-		CPUPercent:  c.measureCPU(pid),
-		MemRSS:      readMemRSS(pid),
-		MemPercent:  c.MemPercent(readMemRSS(pid)),
+		CPUPercent:  c.measureCPU(pid, ps.ticks),
+		MemRSS:      rss,
+		MemPercent:  c.MemPercent(rss),
 		Depth:       depth,
 		IsLastChild: isLast,
 		HasChildren: len(children) > 0,
-		Status:      readState(pid),
+		Status:      ps.state,
 	}
 
 	result := []Process{proc}
@@ -164,11 +181,11 @@ func (c *Collector) buildTree(pid, depth, parentPID int, siblings []int) []Proce
 	return result
 }
 
-// measureCPU returns the CPU% for pid using delta of /proc/PID/stat ticks.
-func (c *Collector) measureCPU(pid int) float64 {
-	now := nowTS()
-	ticks := readStatTicks(pid)
-	curr := cpuSample{ts: now, totalTicks: ticks}
+// measureCPU returns the CPU% for pid using the delta of the /proc/PID/stat
+// tick counters. The ticks are passed in so the stat file does not have to be
+// read twice.
+func (c *Collector) measureCPU(pid int, ticks uint64) float64 {
+	curr := cpuSample{ts: nowTS(), totalTicks: ticks}
 
 	c.mu.Lock()
 	prev, ok := c.cpuBaseline[pid]
@@ -187,12 +204,16 @@ func (c *Collector) measureCPU(pid int) float64 {
 
 // sampleTree seeds the baseline for pid and all its children (used in WarmUp).
 func (c *Collector) sampleTree(pid int) {
-	if !pidExists(pid) {
+	statData, err := readProcFile(pid, "stat")
+	if err != nil {
 		return
 	}
-	ticks := readStatTicks(pid)
+	ps := parseStat(statData)
+	if !ps.ok {
+		return
+	}
 	c.mu.Lock()
-	c.cpuBaseline[pid] = cpuSample{ts: nowTS(), totalTicks: ticks}
+	c.cpuBaseline[pid] = cpuSample{ts: nowTS(), totalTicks: ps.ticks}
 	c.mu.Unlock()
 	for _, child := range readChildren(pid) {
 		c.sampleTree(child)
